@@ -1,14 +1,13 @@
 use std::sync::Arc;
 use std::cmp::min;
 
-use crate::network::Peer;
 use crate::handel::MultiSignature;
-
+use crate::handel::Identity;
 
 #[derive(Debug, Clone)]
 pub struct Level {
     id: usize,
-    peers: Vec<Arc<Peer>>,
+    peers: Vec<Arc<Identity>>,
     send_started: bool,
     receive_completed: bool,
     send_peers_pos: usize,
@@ -20,7 +19,7 @@ pub struct Level {
 }
 
 impl Level {
-    pub fn new(id: usize, peers: Vec<Arc<Peer>>, send_expected_full_size: usize) -> Level {
+    pub fn new(id: usize, peers: Vec<Arc<Identity>>, send_expected_full_size: usize) -> Level {
         Level {
             id,
             peers,
@@ -45,9 +44,9 @@ impl Level {
         self.send_started
     }
 
-    pub fn select_next_peers(&mut self, count: usize) -> Vec<Arc<Peer>> {
+    pub fn select_next_peers(&mut self, count: usize) -> Vec<Arc<Identity>> {
         let size = min(count, self.peers.len());
-        let mut selected: Vec<Arc<Peer>> = Vec::new();
+        let mut selected: Vec<Arc<Identity>> = Vec::new();
 
         for i in 0..size {
             // NOTE: Unwrap is safe, since we make sure at least `size` elements are in `self.peers`

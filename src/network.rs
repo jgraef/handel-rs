@@ -9,15 +9,7 @@ use futures::{Stream, Future, future};
 
 use beserial::{Serialize, Deserialize, SerializingError, WriteBytesExt, ReadBytesExt, BigEndian};
 
-use crate::handel::{NodeId, NodeState};
 
-
-#[derive(Debug)]
-pub struct Peer {
-    address: SocketAddr,
-    node_id: NodeId,
-    signer_idx: u8
-}
 
 #[derive(Debug, Default)]
 pub struct Statistics {
@@ -38,10 +30,6 @@ pub struct Node {
 
 impl Node {
     pub fn handle_messages(bind_to: &SocketAddr) -> impl Future {
-        // set up node's state
-        let mut peers: Vec<Peer> = Vec::new();
-        let mut state = NodeState::new();
-
         // set up UDP socket
         let socket = match UdpSocket::bind(bind_to) {
             Err(e) => return future::Either::A(future::err(e)),
