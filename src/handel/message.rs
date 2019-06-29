@@ -6,5 +6,6 @@ use bls::bls12_381::{Signature, AggregateSignature};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
-    // TODO
+    #[beserial(len_type(u8))]
+    test: String,
 }

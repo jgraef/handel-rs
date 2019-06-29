@@ -1,7 +1,10 @@
 use std::net::{SocketAddr, IpAddr, Ipv4Addr, Ipv6Addr};
+use std::collections::{HashMap, BTreeMap};
 
 use beserial::{Serialize, Deserialize, ReadBytesExt, WriteBytesExt, SerializingError, BigEndian};
 use bls::bls12_381::PublicKey;
+use std::sync::Arc;
+use std::collections::btree_map::Range;
 
 
 #[derive(Clone, Debug)]
@@ -54,13 +57,13 @@ fn serialize_socket_addr<W: WriteBytesExt>(address: &SocketAddr, writer: &mut W)
     // serialize IP
     match address.ip() {
         IpAddr::V4(ref v4) => {
-            writer.write_u8(4);
-            writer.write(&v4.octets());
+            writer.write_u8(4)?;
+            writer.write(&v4.octets())?;
             size += 4;
         },
         IpAddr::V6(ref v6) => {
-            writer.write_u8(6);
-            writer.write(&v6.octets());
+            writer.write_u8(6)?;
+            writer.write(&v6.octets())?;
             size += 16
         },
     };
@@ -102,4 +105,53 @@ fn deserialize_socket_addr<R: ReadBytesExt>(reader: &mut R) -> Result<SocketAddr
     let port = reader.read_u16::<BigEndian>()?;
 
     Ok(SocketAddr::new(ip, port))
+}
+
+
+#[derive(Debug, Clone)]
+pub struct IdentityRegistry {
+    by_id: BTreeMap<usize, Arc<Identity>>,
+    by_address: HashMap<SocketAddr, Arc<Identity>>,
+}
+
+impl IdentityRegistry {
+    pub fn new() -> IdentityRegistry {
+        IdentityRegistry {
+            by_id: BTreeMap::new(),
+            by_address: HashMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, identity: Arc<Identity>) {
+        self.by_id.insert(identity.id, Arc::clone(&identity));
+        self.by_address.insert(identity.address.clone(), identity);
+    }
+
+    pub fn get_by_id(&self, id: usize) -> Option<Arc<Identity>> {
+        self.by_id.get(&id)
+            .map(|identity| Arc::clone(identity))
+    }
+
+    pub fn get_by_id_range(&self, min: usize, max: usize) -> Vec<Arc<Identity>> {
+        let mut identities: Vec<Arc<Identity>> = Vec::new();
+        for (_, identity) in self.by_id.range(min..max) {
+            identities.push(Arc::clone(identity));
+        }
+        identities
+    }
+
+    pub fn get_by_address(&self, address: &SocketAddr) -> Option<Arc<Identity>> {
+        self.by_address.get(address)
+            .map(|identity| Arc::clone(identity))
+    }
+
+    pub fn len(&self) -> usize {
+        self.by_id.len()
+    }
+}
+
+impl Default for IdentityRegistry {
+    fn default() -> Self {
+        IdentityRegistry::new()
+    }
 }

@@ -1,11 +1,17 @@
+use std::sync::Arc;
+
 use hash::Blake2bHash;
+
+use crate::handel::Identity;
 
 
 pub struct Config {
     /// Number of signatures needed to consider the multisig valid
-    threshold: usize,
+    pub threshold: usize,
 
     /// Hash of the message that is being signed
-    message_hash: Blake2bHash,
+    pub message_hash: Blake2bHash,
+
+    pub node_identity: Arc<Identity>,
 }
 

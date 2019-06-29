@@ -1,6 +1,10 @@
 use parking_lot::RwLock;
+use std::sync::Arc;
+use std::net::SocketAddr;
+use std::io::Error as IoError;
 
 use crate::handel::Config;
+use crate::handel::{Identity, IdentityRegistry, Message, Handler};
 
 
 pub struct HandelState {
@@ -22,5 +26,11 @@ impl HandelAgent {
             }),
             config,
         }
+    }
+}
+
+impl Handler for Arc<RwLock<HandelAgent>> {
+    fn on_message(&mut self, message: Message, sender_address: SocketAddr) -> Result<(), IoError> {
+        Ok(())
     }
 }
