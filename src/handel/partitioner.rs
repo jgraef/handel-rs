@@ -32,7 +32,7 @@ impl BinomialPartitioner {
         BinomialPartitioner {
             node_id,
             max_id,
-            num_levels: log_2(max_id).pow(2)
+            num_levels: log_2(max_id)
         }
     }
 

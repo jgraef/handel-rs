@@ -9,14 +9,14 @@ use rand::seq::SliceRandom;
 
 #[derive(Debug, Clone)]
 pub struct Level {
-    id: usize,
-    peer_ids: Vec<usize>,
-    send_started: bool,
-    receive_completed: bool,
-    send_peers_pos: usize,
-    send_peers_count: usize,
-    send_expected_full_size: usize,
-    send_signature_size: usize,
+    pub id: usize,
+    pub peer_ids: Vec<usize>,
+    pub send_started: bool,
+    pub receive_completed: bool,
+    pub send_peers_pos: usize,
+    pub send_peers_count: usize,
+    pub send_expected_full_size: usize,
+    pub send_signature_size: usize,
 }
 
 impl Level {

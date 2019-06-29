@@ -7,7 +7,7 @@ use tokio::net::{UdpSocket, UdpFramed};
 use tokio::io::Error as IoError;
 use tokio::codec::{Encoder, Decoder};
 use bytes::{BytesMut, BufMut};
-use futures::{Stream, Future, future};
+use futures::{Stream, Future, future, StartSend, Sink};
 use futures::stream::{SplitSink, SplitStream, ForEach};
 use parking_lot::RwLock;
 
@@ -35,7 +35,7 @@ impl Statistics {
 
 
 pub trait Handler {
-    fn on_message(&mut self, message: Message, sender_address: SocketAddr) -> Result<(), IoError>;
+    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Result<(), IoError>;
 }
 
 
@@ -71,6 +71,10 @@ impl UdpNetwork {
             sink,
             incoming,
         })
+    }
+
+    pub fn send(&mut self, message: Message, recipient_address: &SocketAddr) -> StartSend<(Message, SocketAddr), IoError> {
+        self.sink.start_send((message, recipient_address.clone()))
     }
 }
 
