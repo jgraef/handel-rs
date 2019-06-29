@@ -30,12 +30,13 @@ use futures::{Future, Stream};
 use log::Level;
 use parking_lot::RwLock;
 use clap::{App, Arg};
+use rand::rngs::OsRng;
 
 use beserial::Deserialize;
 use hash::{Hash, Blake2bHash};
-use bls::bls12_381::{PublicKey, KeyPair};
+use bls::bls12_381::{PublicKey, KeyPair, SecretKey};
 
-use crate::handel::{UdpNetwork, Handler};
+use crate::handel::{UdpNetwork, Handler, IdentityRegistry};
 use crate::handel::{HandelAgent, Config, Identity};
 
 
@@ -91,10 +92,24 @@ fn run_app() -> Result<(), Box<dyn Error>> {
             key_pair.public,
             matches.value_of("address").expect("No address").parse()?
         )),
+        disable_shuffling: true,
     };
 
+    // fill `IdentityRegistry` with some mock data
+    let mut csprng = OsRng::new().expect("OS RNG not available");
+    let mut identities = IdentityRegistry::new();
+    for i in 0..16 {
+        let secret_key = SecretKey::generate(&mut csprng);
+        identities.insert(Arc::new(Identity::new(
+            i,
+            PublicKey::from_secret(&secret_key),
+            SocketAddr::new("127.0.0.1".parse()?, 12000 + i as u16)
+        )))
+    }
+
+
     // Create handel agent
-    let agent = Arc::new(RwLock::new(HandelAgent::new(config)));
+    let agent = Arc::new(RwLock::new(HandelAgent::new(config, identities)));
 
     // start network layer
     let bind_to = SocketAddr::new(

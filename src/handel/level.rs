@@ -1,8 +1,11 @@
 use std::sync::Arc;
 use std::cmp::min;
 
-use crate::handel::MultiSignature;
-use crate::handel::Identity;
+use rand::{Rng, thread_rng};
+
+use crate::handel::{MultiSignature, Identity, BinomialPartitioner, Config};
+use rand::seq::SliceRandom;
+
 
 #[derive(Debug, Clone)]
 pub struct Level {
@@ -14,8 +17,6 @@ pub struct Level {
     send_peers_count: usize,
     send_expected_full_size: usize,
     send_signature_size: usize,
-    //best_incoming: AggregateSignature,
-    //best_outgoing: AggregateSignature,
 }
 
 impl Level {
@@ -32,16 +33,37 @@ impl Level {
         }
     }
 
-    pub fn create_levels() -> Vec<Level> {
-        unimplemented!()
+    pub fn create_levels(config: &Config, partitioner: &BinomialPartitioner) -> Vec<Level> {
+        let mut levels: Vec<Level> = Vec::new();
+        let mut first_active = false;
+        let mut send_expected_full_size: usize = 1;
+        let mut rng = thread_rng();
+
+        for i in partitioner.levels() {
+            debug!("Creating level {}", i);
+            let mut identities = partitioner.identities_at(i)
+                .expect("There should be identities at the given level");
+            debug!("Number of identities: {}", identities.len());
+            if !config.disable_shuffling {
+                identities.shuffle(&mut rng);
+                let size = identities.len();
+                let mut level = Level::new(i, identities, send_expected_full_size);
+
+                if !first_active {
+                    first_active = true;
+                    level.send_started = true;
+                }
+
+                levels.push(level);
+                send_expected_full_size += size;
+            }
+        }
+
+        levels
     }
 
     pub fn active(&self) -> bool {
-        self.started() && self.send_peers_count < self.peers.len()
-    }
-
-    pub fn started(&self) -> bool {
-        self.send_started
+        self.send_started && self.send_peers_count < self.peers.len()
     }
 
     pub fn select_next_peers(&mut self, count: usize) -> Vec<Arc<Identity>> {

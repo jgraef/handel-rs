@@ -148,6 +148,14 @@ impl IdentityRegistry {
     pub fn len(&self) -> usize {
         self.by_id.len()
     }
+
+    pub fn all(&self) -> Vec<Arc<Identity>> {
+        let mut identities: Vec<Arc<Identity>> = Vec::new();
+        for (_, identity) in self.by_id.iter() {
+            identities.push(Arc::clone(identity));
+        }
+        identities
+    }
 }
 
 impl Default for IdentityRegistry {

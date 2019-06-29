@@ -12,6 +12,10 @@ pub struct Config {
     /// Hash of the message that is being signed
     pub message_hash: Blake2bHash,
 
+    /// The identity of this node
     pub node_identity: Arc<Identity>,
+
+    /// Whether to disable shuffling of identities per level
+    pub disable_shuffling: bool,
 }
 

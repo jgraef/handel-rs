@@ -30,7 +30,7 @@ pub struct BinomialPartitioner {
 }
 
 impl BinomialPartitioner {
-    pub fn new(&self, node_id: usize, identities: Arc<IdentityRegistry>) -> Self {
+    pub fn new(node_id: usize, identities: Arc<IdentityRegistry>) -> Self {
         BinomialPartitioner {
             node_id,
             max_level: log_2(identities.len()),
@@ -45,6 +45,12 @@ impl BinomialPartitioner {
     }
 
     fn range_level(&self, level: usize) -> Result<(usize, usize), PartitioningError> {
+        if level == 0 {
+            return Ok((self.node_id, self.node_id));
+        }
+
+        debug!("partitioning: node_id={}, max_level={}, size={}", self.node_id, self.max_level, self.size);
+
         if level > self.max_level + 1 {
             return Err(PartitioningError::InvalidLevel(level));
         }
@@ -56,6 +62,7 @@ impl BinomialPartitioner {
         let mut i = self.max_level - 1;
         while i <= inverse_idx && i >= 0 && min < max {
             let middle = (max + min) / 2;
+            debug!("min={}, max={}, inverse_idx={}, middle={}", min, max, inverse_idx, middle);
 
             if (self.node_id >> i) & 1 == 1 {
                 if i == inverse_idx {
@@ -121,5 +128,15 @@ impl BinomialPartitioner {
     fn size(&self, level: usize) -> Result<usize, PartitioningError> {
         let (min, max) = self.range_level(level)?;
         Ok(max - min)
+    }
+
+    pub fn levels(&self) -> Vec<usize> {
+        let mut levels = Vec::new();
+        for i in 0..self.max_level {
+            if self.range_level(i).is_ok() {
+                levels.push(i)
+            }
+        }
+        levels
     }
 }
