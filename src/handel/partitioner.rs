@@ -5,14 +5,13 @@ use failure::Fail;
 use crate::handel::IdentityRegistry;
 use crate::handel::Identity;
 use crate::handel::utils::log_2;
+use std::ops::{RangeBounds, RangeInclusive, Range};
 
 
-#[derive(Clone, Debug, Fail)]
+#[derive(Clone, Debug, Fail, PartialEq)]
 pub enum PartitioningError {
     #[fail(display = "Invalid level: {}", _0)]
     InvalidLevel(usize),
-    #[fail(display = "Empty level: {}", _0)]
-    EmptyLevel(usize),
 }
 
 
@@ -21,122 +20,76 @@ pub struct BinomialPartitioner {
     // The ID of the node itself
     pub node_id: usize,
 
-    pub max_level: usize,
+    // The maximum ID, ideally this should be 2^k-1
+    pub max_id: usize,
 
-    pub size: usize,
-
-    // All other identities
-    pub identities: Arc<IdentityRegistry>,
+    // the number of levels
+    pub num_levels: usize
 }
 
 impl BinomialPartitioner {
-    pub fn new(node_id: usize, identities: Arc<IdentityRegistry>) -> Self {
+    pub fn new(node_id: usize, max_id: usize) -> Self {
         BinomialPartitioner {
             node_id,
-            max_level: log_2(identities.len()),
-            size: identities.len(),
-            identities,
+            max_id,
+            num_levels: log_2(max_id).pow(2)
         }
     }
 
-    pub fn identities_at(&self, level: usize) -> Result<Vec<Arc<Identity>>, PartitioningError> {
-        let (min, max) = self.range_level(level)?;
-        Ok(self.identities.get_by_id_range(min, max))
-    }
-
-    fn range_level(&self, level: usize) -> Result<(usize, usize), PartitioningError> {
+    pub fn range(&self, level: usize) -> Result<RangeInclusive<usize>, PartitioningError> {
         if level == 0 {
-            return Ok((self.node_id, self.node_id));
+            Ok(self.node_id ..= self.node_id)
         }
-
-        debug!("partitioning: node_id={}, max_level={}, size={}", self.node_id, self.max_level, self.size);
-
-        if level > self.max_level + 1 {
-            return Err(PartitioningError::InvalidLevel(level));
+        else if level >= self.num_levels {
+            Err(PartitioningError::InvalidLevel(level))
         }
+        else {
+            // mask for bits which cover the range
+            let m = (1 << (level - 1)) - 1;
+            // bit that must be flipped
+            let f = 1 << (level - 1);
 
-        let mut min = 0;
-        let mut max = self.max_level.pow(2);
-        let inverse_idx = level - 1;
+            let min = (self.node_id ^ f) & !m;
+            let max = (self.node_id ^ f) | m;
 
-        let mut i = self.max_level - 1;
-        while i <= inverse_idx && i >= 0 && min < max {
-            let middle = (max + min) / 2;
-            debug!("min={}, max={}, inverse_idx={}, middle={}", min, max, inverse_idx, middle);
+            //debug!("node_id={:b}, level={}, m={:b}, f={:b}, min={:b}, max={:b}", self.node_id, level, m, f, min, max);
 
-            if (self.node_id >> i) & 1 == 1 {
-                if i == inverse_idx {
-                    max = middle;
-                }
-                else {
-                    min = middle;
-                }
-            }
-            else {
-                if i == inverse_idx {
-                    min = middle;
-                }
-                else {
-                    max = middle;
-                }
-            }
-
-            i -= 1;
+            Ok(min ..= max)
         }
-
-        if min >= self.size {
-            return Err(PartitioningError::EmptyLevel(level));
-        }
-
-        if max > self.size {
-            max = self.size;
-        }
-
-        Ok((min, max))
     }
+}
 
-    fn range_level_inverse(&self, level: usize) -> Result<(usize, usize), PartitioningError> {
-        if level > self.max_level + 1 {
-            return Err(PartitioningError::InvalidLevel(level));
-        }
 
-        let mut min = 0;
-        let mut max = self.max_level.pow(2);
-        let max_idx = level - 1;
+#[cfg(test)]
+mod tests {
+    use super::{BinomialPartitioner, PartitioningError};
 
-        let mut i = self.max_level - 1;
-        while i >= max_idx && i >= 0 && min < max {
-            let middle = (max + min) / 2;
+    #[test]
+    fn test_partitioner() {
+        /*
+            ---ID---   -Level-
+            0    000   . . 2 .
+            1    001   . . 2 .
+            2    010   . 1 . .
+            3    011   0 . . .
+            4    100   . . . 3
+            5    101   . . . 3
+            6    110   . . . 3
+            7    111   . . . 3
 
-            if (self.node_id >> i) & 1 == 1 {
-                min = middle;
-            }
-            else {
-                max = middle;
-            }
+        node_id = 3
+        level = 3
+        m = (1 << level - 1) - 1 = 100 - 1 = 011
+        f = (1 << level)                   = 100
+        */
 
-            i -= 1;
-        }
+        let partitioner = BinomialPartitioner::new(3, 7);
 
-        if max > self.size {
-            max = self.size;
-        }
-
-        Ok((min, max))
-    }
-
-    fn size(&self, level: usize) -> Result<usize, PartitioningError> {
-        let (min, max) = self.range_level(level)?;
-        Ok(max - min)
-    }
-
-    pub fn levels(&self) -> Vec<usize> {
-        let mut levels = Vec::new();
-        for i in 0..self.max_level {
-            if self.range_level(i).is_ok() {
-                levels.push(i)
-            }
-        }
-        levels
+        assert_eq!(partitioner.num_levels, 4);
+        assert_eq!(partitioner.range(0), Ok(3..=3), "Level 0");
+        assert_eq!(partitioner.range(1), Ok(2..=2), "Level 1");
+        assert_eq!(partitioner.range(2), Ok(0..=1), "Level 2");
+        assert_eq!(partitioner.range(3), Ok(4..=7), "Level 3");
+        assert_eq!(partitioner.range(4), Err(PartitioningError::InvalidLevel(4)));
     }
 }
