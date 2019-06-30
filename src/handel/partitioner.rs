@@ -11,7 +11,7 @@ pub enum PartitioningError {
 }
 
 
-
+#[derive(Clone, Debug)]
 pub struct BinomialPartitioner {
     // The ID of the node itself
     pub node_id: usize,
@@ -30,6 +30,10 @@ impl BinomialPartitioner {
             max_id,
             num_levels: log2(max_id) + 2
         }
+    }
+
+    pub fn size(&self, level: usize) -> usize {
+        2_usize.pow(level as u32)
     }
 
     pub fn range(&self, level: usize) -> Result<RangeInclusive<usize>, PartitioningError> {

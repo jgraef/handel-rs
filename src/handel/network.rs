@@ -1,12 +1,12 @@
 use std::net::SocketAddr;
-use std::io::Cursor;
+use std::io::{Cursor, ErrorKind};
 use std::sync::Arc;
 
 use tokio::net::{UdpSocket, UdpFramed};
 use tokio::io::Error as IoError;
 use tokio::codec::{Encoder, Decoder};
 use bytes::{BytesMut, BufMut};
-use futures::{Stream, Future, StartSend, Sink};
+use futures::{Stream, Future, StartSend, Sink, future, IntoFuture};
 use futures::stream::{SplitSink, SplitStream, ForEach};
 use parking_lot::RwLock;
 use failure::Error;
@@ -34,9 +34,9 @@ impl Statistics {
 }
 
 pub trait Handler {
-    type Result: Future;
+    type Result: IntoFuture<Item=(), Error=IoError>;
 
-    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Result<Self::Result, Error>;
+    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Self::Result;
 }
 
 
@@ -63,9 +63,7 @@ impl UdpNetwork {
 
         let incoming: Incoming = stream.for_each(Box::new(move |(message, sender_address)| {
             debug!("Message: {:?} from {}", message, sender_address);
-            if let Err(e) = handler.on_message(message, sender_address) {
-                warn!("Error: {}", e)
-            }
+            handler.on_message(message, sender_address);
             Ok(())
         }));
 

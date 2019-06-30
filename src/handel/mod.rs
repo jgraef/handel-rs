@@ -8,7 +8,7 @@ mod config;
 mod partitioner;
 mod network;
 pub mod utils;
-mod processing;
+mod store;
 
 
 pub use level::Level;
@@ -19,4 +19,4 @@ pub use agent::HandelAgent;
 pub use config::Config;
 pub use partitioner::BinomialPartitioner;
 pub use network::{UdpNetwork, Handler};
-pub use processing::{SignatureProcessing, ProcessingError};
+pub use store::SignatureStore;

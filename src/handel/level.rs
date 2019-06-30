@@ -1,4 +1,5 @@
 use std::cmp::min;
+use std::sync::Arc;
 
 use rand::thread_rng;
 
@@ -32,7 +33,7 @@ impl Level {
         }
     }
 
-    pub fn create_levels(config: &Config, partitioner: &BinomialPartitioner) -> Vec<Level> {
+    pub fn create_levels(config: &Config, partitioner: Arc<BinomialPartitioner>) -> Vec<Level> {
         let mut levels: Vec<Level> = Vec::new();
         let mut first_active = false;
         let mut send_expected_full_size: usize = 1;
@@ -85,11 +86,11 @@ impl Level {
     }
 
     pub fn update_signature_to_send(&mut self, signature: &MultiSignature) -> bool {
-        if self.send_signature_size >= signature.num_signers {
+        if self.send_signature_size >= signature.len() {
             return false;
         }
 
-        self.send_signature_size = signature.num_signers;
+        self.send_signature_size = signature.len();
         self.send_peers_count = 0;
 
         if self.send_signature_size == self.send_expected_full_size {

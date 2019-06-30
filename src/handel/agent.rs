@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::net::SocketAddr;
 use std::io::Error as IoError;
+use std::io::ErrorKind;
 
 use parking_lot::RwLock;
 use failure::{Fail, Error};
@@ -8,10 +9,10 @@ use futures::{Future, future, Join};
 use futures_cpupool::CpuFuture;
 
 use beserial::Serialize;
+use bls::bls12_381::Signature;
 
 use crate::handel::{
-    IdentityRegistry, Message, Handler, Config, BinomialPartitioner, Level,
-    SignatureProcessing, ProcessingError
+    IdentityRegistry, Message, Handler, Config, BinomialPartitioner, Level, MultiSignature,
 };
 use futures::future::{FutureResult, Either};
 use std::convert::TryInto;
@@ -19,8 +20,6 @@ use std::convert::TryInto;
 
 #[derive(Debug, Fail)]
 pub enum AgentError {
-    #[fail(display = "Processing error: {}", _0)]
-    Processing(#[cause] ProcessingError),
     #[fail(display = "IO error: {}", _0)]
     Io(#[cause] IoError),
     #[fail(display = "Aggregation finished")]
@@ -33,12 +32,6 @@ impl From<IoError> for AgentError {
     }
 }
 
-impl From<ProcessingError> for AgentError {
-    fn from(e: ProcessingError) -> Self {
-        AgentError::Processing(e)
-    }
-}
-
 
 pub struct HandelState {
     done: bool,
@@ -48,9 +41,9 @@ pub struct HandelAgent {
     state: RwLock<HandelState>,
     config: Config,
     identities: Arc<IdentityRegistry>,
-    partitioner: BinomialPartitioner,
+    partitioner: Arc<BinomialPartitioner>,
     levels: Vec<Level>,
-    processing: SignatureProcessing,
+
 }
 
 
@@ -70,8 +63,8 @@ impl HandelAgent {
         }
 
         let identities = Arc::new(identities);
-        let partitioner = BinomialPartitioner::new(config.node_identity.id, max_id);
-        let levels = Level::create_levels(&config, &partitioner);
+        let partitioner = Arc::new(BinomialPartitioner::new(config.node_identity.id, max_id));
+        let levels = Level::create_levels(&config, Arc::clone(&partitioner));
 
         HandelAgent {
             state: RwLock::new(HandelState {
@@ -81,18 +74,23 @@ impl HandelAgent {
             identities,
             partitioner,
             levels,
-            processing: SignatureProcessing::new(),
         }
+    }
+
+    fn process_multisig(&self, multisig: MultiSignature, origin: usize, level: usize) {
+
+    }
+
+    fn process_individual(&self, individual: Signature, origin: usize, level: usize) {
+
     }
 }
 
-pub type MessageHandlerFuture = Join<CpuFuture<(), ProcessingError>, Either<CpuFuture<(), ProcessingError>, FutureResult<(), ProcessingError>>>;
 
 impl Handler for Arc<HandelAgent> {
-    type Result = MessageHandlerFuture;
-    //type Error = AgentError;
+    type Result = Result<(), IoError>;
 
-    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Result<MessageHandlerFuture, Error> {
+    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Self::Result {
         let guard = self.state.read();
 
         if !guard.done {
@@ -104,24 +102,19 @@ impl Handler for Arc<HandelAgent> {
                 individual,
             } = message;
 
-            // convert origin and level to usize
-            let origin: usize = origin.try_into()?;
-            let level: usize = level.try_into()?;
-
             info!("Received message from address={} id={} for level={}", sender_address, origin, level);
 
-            // send multisig and individual to processor
-            Ok(self.processing.process_multisig(multisig, origin, level)
-                .join(match individual {
-                    Some(signature) => {
-                        Either::A(self.processing.process_individual(signature, origin, level))
-                    },
-                    None => Either::B(future::ok::<(), ProcessingError>(())),
-                }))
+            self.process_multisig(multisig, origin as usize, level as usize);
+
+            if let Some(sig) = individual {
+                self.process_individual(sig, origin as usize, level as usize);
+            }
+
+            Ok(())
         }
         else {
             // TODO: is that the correct error or should we fail at all?
-            Err(AgentError::Done)?
+            Err(IoError::from(ErrorKind::ConnectionReset))
         }
     }
 }
