@@ -1,9 +1,8 @@
-use std::sync::Arc;
 use std::cmp::min;
 
-use rand::{Rng, thread_rng};
+use rand::thread_rng;
 
-use crate::handel::{MultiSignature, Identity, IdentityRegistry, BinomialPartitioner, Config};
+use crate::handel::{MultiSignature, BinomialPartitioner, Config};
 use rand::seq::SliceRandom;
 
 
@@ -73,7 +72,7 @@ impl Level {
         let size = min(count, self.peer_ids.len());
         let mut selected: Vec<usize> = Vec::new();
 
-        for i in 0..size {
+        for _ in 0..size {
             // NOTE: Unwrap is safe, since we make sure at least `size` elements are in `self.peers`
             selected.push(*self.peer_ids.get(self.send_peers_pos).unwrap());
             self.send_peers_pos += 1;

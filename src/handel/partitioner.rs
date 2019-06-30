@@ -1,11 +1,7 @@
-use std::sync::Arc;
-
 use failure::Fail;
 
-use crate::handel::IdentityRegistry;
-use crate::handel::Identity;
-use crate::handel::utils::log_2;
-use std::ops::{RangeBounds, RangeInclusive, Range};
+use crate::handel::utils::log2;
+use std::ops::RangeInclusive;
 
 
 #[derive(Clone, Debug, Fail, PartialEq)]
@@ -32,7 +28,7 @@ impl BinomialPartitioner {
         BinomialPartitioner {
             node_id,
             max_id,
-            num_levels: log_2(max_id)
+            num_levels: log2(max_id) + 2
         }
     }
 

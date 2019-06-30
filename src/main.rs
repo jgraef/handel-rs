@@ -8,6 +8,7 @@ extern crate futures;
 extern crate bytes;
 extern crate failure;
 extern crate hex;
+extern crate futures_cpupool;
 
 extern crate beserial;
 #[macro_use]
@@ -26,9 +27,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::error::Error;
 
-use futures::{Future, Stream};
+use futures::Future;
 use log::Level;
-use parking_lot::RwLock;
 use clap::{App, Arg};
 use rand::rngs::OsRng;
 
@@ -36,7 +36,7 @@ use beserial::Deserialize;
 use hash::{Hash, Blake2bHash};
 use bls::bls12_381::{PublicKey, KeyPair, SecretKey};
 
-use crate::handel::{UdpNetwork, Handler, IdentityRegistry};
+use crate::handel::{UdpNetwork, IdentityRegistry};
 use crate::handel::{HandelAgent, Config, Identity};
 
 
@@ -109,7 +109,7 @@ fn run_app() -> Result<(), Box<dyn Error>> {
 
 
     // Create handel agent
-    let agent = Arc::new(RwLock::new(HandelAgent::new(config, identities)));
+    let agent = Arc::new(HandelAgent::new(config, identities));
 
     // start network layer
     let bind_to = SocketAddr::new(
@@ -120,12 +120,11 @@ fn run_app() -> Result<(), Box<dyn Error>> {
 
     // run everything
     tokio::run(network.incoming
-        .map_err(|e| {
-            error!("Error?");
+        .map_err(|_| {
+            error!("Future failed");
         })
         .map(|_| {
-            // nop
-            info!("Done");
+            debug!("Future finished");
         })
     );
 

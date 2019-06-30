@@ -1,23 +1,56 @@
-use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use std::sync::Arc;
 use std::net::SocketAddr;
 use std::io::Error as IoError;
-use std::io::ErrorKind;
+
+use parking_lot::RwLock;
+use failure::{Fail, Error};
+use futures::{Future, future, Join};
+use futures_cpupool::CpuFuture;
 
 use beserial::Serialize;
-use bls::bls12_381::{AggregateSignature, Signature};
 
 use crate::handel::{
-    Identity, IdentityRegistry, Message, Handler, Config, BinomialPartitioner, Level
+    IdentityRegistry, Message, Handler, Config, BinomialPartitioner, Level,
+    SignatureProcessing, ProcessingError
 };
+use futures::future::{FutureResult, Either};
+use std::convert::TryInto;
 
+
+#[derive(Debug, Fail)]
+pub enum AgentError {
+    #[fail(display = "Processing error: {}", _0)]
+    Processing(#[cause] ProcessingError),
+    #[fail(display = "IO error: {}", _0)]
+    Io(#[cause] IoError),
+    #[fail(display = "Aggregation finished")]
+    Done,
+}
+
+impl From<IoError> for AgentError {
+    fn from(e: IoError) -> Self {
+        AgentError::Io(e)
+    }
+}
+
+impl From<ProcessingError> for AgentError {
+    fn from(e: ProcessingError) -> Self {
+        AgentError::Processing(e)
+    }
+}
+
+
+pub struct HandelState {
+    done: bool,
+}
 
 pub struct HandelAgent {
+    state: RwLock<HandelState>,
     config: Config,
-    done: bool,
     identities: Arc<IdentityRegistry>,
     partitioner: BinomialPartitioner,
     levels: Vec<Level>,
+    processing: SignatureProcessing,
 }
 
 
@@ -41,35 +74,54 @@ impl HandelAgent {
         let levels = Level::create_levels(&config, &partitioner);
 
         HandelAgent {
+            state: RwLock::new(HandelState {
+                done: false,
+            }),
             config,
-            done: false,
             identities,
             partitioner,
             levels,
+            processing: SignatureProcessing::new(),
         }
-    }
-
-    pub fn on_message(&mut self, message: Message, sender_address: SocketAddr) -> Result<(), IoError> {
-        if !self.done && !self.levels.get(message.level as usize)
-            .ok_or_else(|| IoError::from(ErrorKind::InvalidInput))?.receive_completed {
-            self.add_aggregate_signature(&message.aggregate_signature);
-            self.add_individual_signature(&message.individual_signature);
-
-        }
-        Ok(())
-    }
-
-    pub fn add_aggregate_signature(&mut self, signature: &AggregateSignature) {
-        unimplemented!()
-    }
-
-    pub fn add_individual_signature(&mut self, signature: &Signature) {
-        unimplemented!()
     }
 }
 
-impl Handler for Arc<RwLock<HandelAgent>> {
-    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Result<(), IoError> {
-        self.write().on_message(message, sender_address)
+pub type MessageHandlerFuture = Join<CpuFuture<(), ProcessingError>, Either<CpuFuture<(), ProcessingError>, FutureResult<(), ProcessingError>>>;
+
+impl Handler for Arc<HandelAgent> {
+    type Result = MessageHandlerFuture;
+    //type Error = AgentError;
+
+    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Result<MessageHandlerFuture, Error> {
+        let guard = self.state.read();
+
+        if !guard.done {
+            // deconstruct message
+            let Message {
+                origin,
+                level,
+                multisig,
+                individual,
+            } = message;
+
+            // convert origin and level to usize
+            let origin: usize = origin.try_into()?;
+            let level: usize = level.try_into()?;
+
+            info!("Received message from address={} id={} for level={}", sender_address, origin, level);
+
+            // send multisig and individual to processor
+            Ok(self.processing.process_multisig(multisig, origin, level)
+                .join(match individual {
+                    Some(signature) => {
+                        Either::A(self.processing.process_individual(signature, origin, level))
+                    },
+                    None => Either::B(future::ok::<(), ProcessingError>(())),
+                }))
+        }
+        else {
+            // TODO: is that the correct error or should we fail at all?
+            Err(AgentError::Done)?
+        }
     }
 }

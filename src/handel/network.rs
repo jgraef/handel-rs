@@ -1,17 +1,17 @@
 use std::net::SocketAddr;
-use std::io::{Write, ErrorKind, Cursor};
+use std::io::Cursor;
 use std::sync::Arc;
-use std::marker::PhantomData;
 
 use tokio::net::{UdpSocket, UdpFramed};
 use tokio::io::Error as IoError;
 use tokio::codec::{Encoder, Decoder};
 use bytes::{BytesMut, BufMut};
-use futures::{Stream, Future, future, StartSend, Sink};
+use futures::{Stream, Future, StartSend, Sink};
 use futures::stream::{SplitSink, SplitStream, ForEach};
 use parking_lot::RwLock;
+use failure::Error;
 
-use beserial::{Serialize, Deserialize, SerializingError, WriteBytesExt, ReadBytesExt, BigEndian};
+use beserial::{Serialize, Deserialize, WriteBytesExt, ReadBytesExt, BigEndian};
 
 use crate::handel::Message;
 
@@ -33,9 +33,10 @@ impl Statistics {
     }
 }
 
-
 pub trait Handler {
-    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Result<(), IoError>;
+    type Result: Future;
+
+    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Result<Self::Result, Error>;
 }
 
 
@@ -53,7 +54,7 @@ pub struct UdpNetwork {
 }
 
 impl UdpNetwork {
-    pub fn new<H: Handler + Send + 'static>(bind_to: &SocketAddr, mut handler: H) -> Result<Self, IoError> {
+    pub fn new<H: Handler + Send + 'static>(bind_to: &SocketAddr, handler: H) -> Result<Self, IoError> {
         // set up UDP socket
         let socket = UdpSocket::bind(bind_to)?;
         let statistics = Arc::new(RwLock::new(Statistics::default()));
@@ -62,7 +63,9 @@ impl UdpNetwork {
 
         let incoming: Incoming = stream.for_each(Box::new(move |(message, sender_address)| {
             debug!("Message: {:?} from {}", message, sender_address);
-            handler.on_message(message, sender_address);
+            if let Err(e) = handler.on_message(message, sender_address) {
+                warn!("Error: {}", e)
+            }
             Ok(())
         }));
 
@@ -128,7 +131,7 @@ impl Decoder for Codec {
         }
 
         // more than 2 bytes in buffer, read the frame length
-        let mut raw_frame_size = src.split_to(2);
+        let raw_frame_size = src.split_to(2);
         let frame_size = raw_frame_size.as_ref().read_u16::<BigEndian>()? as usize;
         debug!("decode: frame_size={}", frame_size);
 
