@@ -90,7 +90,8 @@ fn run_app() -> Result<(), Box<dyn Error>> {
         node_identity: Arc::new(Identity::new(
             matches.value_of("id").expect("No ID").parse()?,
             key_pair.public,
-            matches.value_of("address").expect("No address").parse()?
+            matches.value_of("address").expect("No address").parse()?,
+            1
         )),
         disable_shuffling: true,
     };
@@ -103,7 +104,8 @@ fn run_app() -> Result<(), Box<dyn Error>> {
         identities.insert(Arc::new(Identity::new(
             i,
             PublicKey::from_secret(&secret_key),
-            SocketAddr::new("127.0.0.1".parse()?, 12000 + i as u16)
+            SocketAddr::new("127.0.0.1".parse()?, 12000 + i as u16),
+            1
         )))
     }
 

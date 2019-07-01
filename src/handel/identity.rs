@@ -1,9 +1,12 @@
 use std::net::{SocketAddr, IpAddr, Ipv4Addr, Ipv6Addr};
 use std::collections::{HashMap, BTreeMap};
 use std::sync::Arc;
+use std::convert::TryFrom;
 
 use beserial::{Serialize, Deserialize, ReadBytesExt, WriteBytesExt, SerializingError, BigEndian};
 use bls::bls12_381::PublicKey;
+
+use crate::handel::Verifier;
 
 
 
@@ -12,24 +15,28 @@ pub struct Identity {
     pub id: usize,
     pub public_key: PublicKey,
     pub address: SocketAddr,
+    pub weight: usize,
 }
 
 impl Identity {
-    pub fn new(id: usize, public_key: PublicKey, address: SocketAddr) -> Identity {
+    pub fn new(id: usize, public_key: PublicKey, address: SocketAddr, weight: usize) -> Identity {
         Identity {
             id,
             public_key,
-            address
+            address,
+            weight
         }
     }
 }
 
 impl Serialize for Identity {
     fn serialize<W: WriteBytesExt>(&self, writer: &mut W) -> Result<usize, SerializingError> {
-        let mut size = 2;
+        let mut size = 2 /* id */ + 8 /* weight */;
         writer.write_u16::<BigEndian>(self.id as u16)?;
         size += Serialize::serialize(&self.public_key, writer)?;
         size += serialize_socket_addr(&self.address, writer)?;
+        writer.write_u64::<BigEndian>(u64::try_from(self.weight)
+                             .map_err(|_| SerializingError::Overflow)?);
         Ok(size)
     }
 
@@ -43,10 +50,13 @@ impl Deserialize for Identity {
         let id = reader.read_u16::<BigEndian>()? as usize;
         let public_key: PublicKey = Deserialize::deserialize(reader)?;
         let address = deserialize_socket_addr(reader)?;
+        let weight = usize::try_from(reader.read_u64::<BigEndian>()?)
+            .map_err(|_| SerializingError::Overflow)?;
         Ok(Identity {
             id,
             public_key,
-            address
+            address,
+            weight
         })
     }
 }

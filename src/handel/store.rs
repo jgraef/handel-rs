@@ -75,6 +75,8 @@ impl SignatureStore for ReplaceStore {
     }
 
     fn evaluate_multisig(&self, multisig: &MultiSignature, level: usize) -> usize {
+        // TODO: Signatures may have different weights and we could use that for scoring
+
         let to_receive = self.partitioner.size(level);
         let best_signature = self.multisig_best.get(&level);
 

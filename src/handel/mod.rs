@@ -9,6 +9,7 @@ mod partitioner;
 mod network;
 pub mod utils;
 mod store;
+mod verifier;
 
 
 pub use level::Level;
@@ -19,4 +20,5 @@ pub use agent::HandelAgent;
 pub use config::Config;
 pub use partitioner::BinomialPartitioner;
 pub use network::{UdpNetwork, Handler};
-pub use store::SignatureStore;
+pub use store::{SignatureStore, ReplaceStore};
+pub use verifier::{Verifier, VerifyResult};
