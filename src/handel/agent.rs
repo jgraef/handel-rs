@@ -151,6 +151,7 @@ impl HandelAgent {
         // put our own individual signature into store
         store.put_individual(individual.clone(), 0, config.node_identity.id);
         store.put_multisig(MultiSignature::from_individual(&individual, config.node_identity.id), 0);
+        debug!("{:#?}", store);
 
         /*debug!("Levels (n={}):", levels.len());
         for level in levels.iter() {

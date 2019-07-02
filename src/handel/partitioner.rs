@@ -65,7 +65,7 @@ impl BinomialPartitioner {
         let mut combined = (*signatures.first()?).clone();
 
         for signature in signatures.iter().skip(1) {
-            combined.combine(signature);
+            combined.add_multisig(signature);
         }
 
         Some(combined)

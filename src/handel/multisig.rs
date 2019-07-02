@@ -9,6 +9,8 @@ use collections::bitset::BitSet;
 pub enum MultiSigError {
     #[fail(display = "Signatures are overlapping: {:?}", _0)]
     Overlapping(BitSet),
+    #[fail(display = "Individual signature is already contained: {:?}", _0)]
+    Contained(usize),
 }
 
 
@@ -43,7 +45,7 @@ impl MultiSignature {
         self.signers.len()
     }
 
-    pub fn combine(&mut self, other: &MultiSignature) -> Result<(), MultiSigError> {
+    pub fn add_multisig(&mut self, other: &MultiSignature) -> Result<(), MultiSigError> {
         // TODO: If we don't need the overlapping IDs for the error, we can use `intersection_size`
         let overlap = &self.signers & &other.signers;
 
@@ -54,6 +56,17 @@ impl MultiSignature {
         }
         else {
             Err(MultiSigError::Overlapping(overlap))
+        }
+    }
+
+    pub fn add_individual(&mut self, other: &Signature, peer_id: usize) -> Result<(), MultiSigError> {
+        if self.signers.contains(peer_id) {
+            Err(MultiSigError::Contained(peer_id))
+        }
+        else {
+            self.signature.aggregate(other);
+            self.signers.insert(peer_id);
+            Ok(())
         }
     }
 

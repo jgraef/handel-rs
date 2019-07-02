@@ -63,8 +63,48 @@ impl ReplaceStore {
         }
     }
 
-    fn check_merge(&self, multisig: &MultiSignature, level: usize) -> (MultiSignature, bool) {
-        unimplemented!()
+    fn check_merge(&self, multisig: &MultiSignature, level: usize) -> Option<MultiSignature> {
+        if let Some(best_multisig) = self.multisig_best.get(&level) {
+            // try to combine
+            let mut multisig = multisig.clone();
+
+            // we can ignore the error, if it's not possible to merge we continue
+            multisig.add_multisig(best_multisig)
+                .map_err(|e| {
+                    debug!("check_merge: combining multisigs failed: {}", e);
+                });
+
+            let individual_verified = self.individual_verified.get(level)
+                .unwrap_or_else(|| panic!("Individual verified signatures BitSet is missing for level {}", level));
+
+            // the bits set here are verified individual signatures that can be added to `multisig`
+            let complements = &(&multisig.signers & individual_verified) ^ individual_verified;
+
+            // check that if we combine we get a better signature
+            if complements.len() + multisig.len() <= best_multisig.len() {
+                // doesn't get better
+                None
+            }
+            else {
+                // put in the individual signatures
+                for id in complements.iter() {
+                    // get individual signature
+                    // TODO: Why do we need to store individual signatures per level?
+                    let individual = self.individual_signatures.get(level)
+                        .unwrap_or_else(|| panic!("Individual signatures missing for level {}", level))
+                        .get(&id).unwrap_or_else(|| panic!("Individual signature with ID {} missing for level {}", id, level));
+
+                    // merge individual signature into multisig
+                    multisig.add_individual(individual, id)
+                        .unwrap_or_else(|e| panic!("Individual signature with ID {} already included in multisig", id));
+                }
+
+                Some(multisig)
+            }
+        }
+        else {
+            Some(multisig.clone())
+        }
     }
 }
 
@@ -145,9 +185,8 @@ impl SignatureStore for ReplaceStore {
     }
 
     fn put_multisig(&mut self, multisig: MultiSignature, level: usize) {
-        let (best_signature, store) = self.check_merge(&multisig, level);
-        if store {
-            self.multisig_best.insert(level, best_signature);
+        if let Some(best_multisig) = self.check_merge(&multisig, level) {
+            self.multisig_best.insert(level, best_multisig);
             if level > self.best_level {
                 self.best_level = level;
             }
