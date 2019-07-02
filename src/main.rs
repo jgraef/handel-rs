@@ -27,7 +27,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::error::Error;
 
-use futures::Future;
+use futures::{Future, Stream};
 use log::Level;
 use clap::{App, Arg};
 use rand::rngs::OsRng;
@@ -36,8 +36,9 @@ use beserial::Deserialize;
 use hash::{Hash, Blake2bHash};
 use bls::bls12_381::{PublicKey, KeyPair, SecretKey};
 
-use crate::handel::{UdpNetwork, IdentityRegistry};
-use crate::handel::{HandelAgent, Config, Identity};
+use crate::handel::{
+    UdpNetwork, IdentityRegistry, HandelAgent, Config, Identity, Handler, AgentProcessor
+};
 
 
 fn run_app() -> Result<(), Box<dyn Error>> {
@@ -109,26 +110,23 @@ fn run_app() -> Result<(), Box<dyn Error>> {
         )))
     }
 
-
-    // Create handel agent
-    let agent = Arc::new(HandelAgent::new(config, identities));
-
     // start network layer
+    let mut network = UdpNetwork::new();
     let bind_to = SocketAddr::new(
         "0.0.0.0".parse().expect("Invalid IP address"),
         matches.value_of("port").expect("No port").parse()?,
     );
-    let network = UdpNetwork::new(&bind_to, Arc::clone(&agent)).expect("Failed to initialize network");
+
+    // initialize agent
+    let agent = Arc::new(HandelAgent::new(config, identities, network.sink()));
+
+    let main_fut = network
+        .connect(&bind_to, Arc::clone(&agent))
+        .expect("Failed to initialize network")
+        .join(agent.spawn()).map(|_| ());
 
     // run everything
-    tokio::run(network.incoming
-        .map_err(|_| {
-            error!("Future failed");
-        })
-        .map(|_| {
-            debug!("Future finished");
-        })
-    );
+    tokio::run(main_fut);
 
     Ok(())
 }

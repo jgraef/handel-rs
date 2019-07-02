@@ -2,21 +2,23 @@ use std::sync::Arc;
 use std::net::SocketAddr;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
+use std::convert::TryInto;
 
 use parking_lot::RwLock;
 use failure::{Fail, Error};
-use futures::{Future, future, Join};
+use futures::{Future, future, Join, Stream};
+use futures::future::{FutureResult, Either, ok};
 use futures_cpupool::CpuFuture;
 
 use beserial::Serialize;
 use bls::bls12_381::Signature;
 
 use crate::handel::{
-    IdentityRegistry, Message, Handler, Config, BinomialPartitioner, Level, MultiSignature,
-    SignatureStore, ReplaceStore, Verifier, VerifyResult
+    IdentityRegistry, Message, Config, BinomialPartitioner, Level, MultiSignature, Handler,
+    SignatureStore, ReplaceStore, Verifier, VerifyResult, Identity, HandelSink, HandelStream
 };
-use futures::future::{FutureResult, Either};
-use std::convert::TryInto;
+use futures::sync::mpsc::SendError;
+use futures::executor::Spawn;
 
 
 #[derive(Debug, Fail)]
@@ -96,12 +98,13 @@ pub struct HandelAgent {
     identities: Arc<IdentityRegistry>,
     partitioner: Arc<BinomialPartitioner>,
     levels: Vec<Level>,
-    verifier: Verifier
+    verifier: Verifier,
+    sink: HandelSink,
 }
 
 
 impl HandelAgent {
-    pub fn new(config: Config, identities: IdentityRegistry) -> HandelAgent {
+    pub fn new(config: Config, identities: IdentityRegistry, sink: HandelSink) -> HandelAgent {
         info!("New Handel Agent:");
         info!(" - ID: {}", config.node_identity.id);
         info!(" - Address: {}", config.node_identity.address);
@@ -119,7 +122,7 @@ impl HandelAgent {
         let partitioner = Arc::new(BinomialPartitioner::new(config.node_identity.id, max_id));
         let levels = Level::create_levels(&config, Arc::clone(&partitioner));
         let store = ReplaceStore::new(Arc::clone(&partitioner));
-        let verifier = Verifier::new(config.threshold, config.message_hash.clone(), Arc::clone(&identities));
+        let verifier = Verifier::new(config.threshold, config.message_hash.clone(), Arc::clone(&identities), None);
 
         HandelAgent {
             state: RwLock::new(HandelState {
@@ -132,18 +135,48 @@ impl HandelAgent {
             partitioner,
             levels,
             verifier,
+            sink,
         }
+    }
+
+    pub fn send_to(&self, to: Vec<Arc<Identity>>, multisig: MultiSignature, individual: Option<Signature>, level: usize) -> Result<(), SendError<(Message, SocketAddr)>> {
+        let message = Message {
+            origin: self.config.node_identity.id as u16,
+            level: level as u8,
+            multisig,
+            individual,
+        };
+
+        for id in to {
+            self.sink.unbounded_send((message.clone(), id.address.clone()))?;
+        }
+
+        Ok(())
     }
 }
 
 
+pub type AgentFuture = Box<dyn Future<Item=(), Error=()> + Send>;
+
+pub trait AgentProcessor {
+    fn spawn(&self) -> AgentFuture;
+}
+
+impl AgentProcessor for Arc<HandelAgent> {
+    fn spawn(&self) -> AgentFuture {
+        let agent = Arc::clone(self);
+        Box::new(future::lazy(move || {
+            future::ok::<(), ()>(())
+        }))
+    }
+}
+
+
+
 impl Handler for Arc<HandelAgent> {
-    type Result = Result<(), IoError>;
-
-    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Self::Result {
-        let mut state = self.state.write();
-
-        if !state.done {
+    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Box<dyn Future<Item=(), Error=IoError> + Send> {
+        // we create a future that handles the message
+        let handle_fut = if !self.state.read().done {
             // deconstruct message
             let Message {
                 origin,
@@ -151,6 +184,8 @@ impl Handler for Arc<HandelAgent> {
                 multisig,
                 individual,
             } = message;
+            let origin = origin as usize;
+            let level = level as usize;
 
             info!("Received message from address={} id={} for level={}", sender_address, origin, level);
 
@@ -158,27 +193,68 @@ impl Handler for Arc<HandelAgent> {
             //     longest will be the signature checking, so we could distribute that over a
             //     CPU pool.
 
+            // Creates a future that will verify the multisig on a CpuPool and then push it into
+            // the TODOs
+            let this = Arc::clone(&self);
+            let multisig_fut = self.verifier.verify_multisig(multisig.clone())
+                .and_then(move|result| {
+                    if result == VerifyResult::Ok {
+                        this.state.write().todos.push(Todo::Multi { signature: multisig, level });
+                    }
+                    else {
+                        warn!("Rejected signature: {:?}", result);
+                    }
+                    Ok(())
+                });
 
-            state.todos.push(Todo::Multi { signature: multisig, level: level as usize });
+            // Creates a future that will verify the individual signature on a CpuPool and then
+            // push it into the TODOs
+            let this = Arc::clone(&self);
+            let individual_fut = if let Some(sig) = individual {
+                Either::A(self.verifier.verify_individual(sig.clone(), origin)
+                    .and_then(move |result| {
+                        if result == VerifyResult::Ok {
+                            this.state.write().todos.push(Todo::Individual{ signature: sig, level, origin });
+                        }
+                        else {
+                            warn!("Rejected signature: {:?}", result);
+                        }
+                        Ok(())
+                    }))
+            } else {
+                Either::B(future::ok::<(), ()>(()))
+            };
 
-            if let Some(sig) = individual {
-                // XXX I think the reference implementation does the verification somewhere else
-                if self.verifier.verify_individual(&sig, origin as usize) == VerifyResult::Ok {
-                    state.todos.push(Todo::Individual{ signature: sig, level: level as usize, origin: origin as usize });
-                }
-            }
+            // Creates a future that will first verify the signatures and then gets all good TODOs
+            // and applys them
+            let this = Arc::clone(&self);
+            let process_fut = multisig_fut
+                .join(individual_fut)
+                .and_then(move |_| {
+                    let mut state = this.state.write();
 
-            // continously put best todo into store, until there is no good one anymore
-            while let Some((todo, score)) = state.get_best_todo() {
-                // TODO: put signature from todo into store - is this correct?
-                todo.put(&mut state.store);
-            }
+                    // continuously put best todo into store, until there is no good one anymore
+                    while let Some((todo, score)) = state.get_best_todo() {
+                        // TODO: put signature from todo into store - is this correct?
+                        todo.put(&mut state.store);
+                    }
+                    Ok(())
+                })
+                .map_err(|e| {
+                    // Technically nothing here can fail, but we need to handle that case anyway
+                    warn!("The signature processing future somehow failed: {:?}", e);
+                    IoError::from(ErrorKind::ConnectionReset)
+                });
 
-            Ok(())
+            Either::A(process_fut)
         }
         else {
-            // TODO: is that the correct error or should we fail at all?
-            Err(IoError::from(ErrorKind::ConnectionReset))
-        }
+            // we're done, so we don't care
+            Either::B(future::failed(IoError::from(ErrorKind::ConnectionReset)))
+        };
+
+        // box it, so we don't have to bother about the return type
+        Box::new(handle_fut)
     }
+
 }

@@ -12,8 +12,7 @@ class Message:
     def encode(self):
         return struct.pack(">HB", self.length(), len(self.s)) + self.s.encode()
 
+
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-
 msg = Message("Hello World")
-sock.sendto(msg.encode(), ("localhost", 1337))
+sock.sendto(msg.encode(), ("localhost", 12000))

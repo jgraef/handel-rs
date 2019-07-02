@@ -36,7 +36,7 @@ impl Serialize for Identity {
         size += Serialize::serialize(&self.public_key, writer)?;
         size += serialize_socket_addr(&self.address, writer)?;
         writer.write_u64::<BigEndian>(u64::try_from(self.weight)
-                             .map_err(|_| SerializingError::Overflow)?);
+                             .map_err(|_| SerializingError::Overflow)?)?;
         Ok(size)
     }
 

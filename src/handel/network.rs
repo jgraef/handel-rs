@@ -5,16 +5,18 @@ use std::sync::Arc;
 use tokio::net::{UdpSocket, UdpFramed};
 use tokio::io::Error as IoError;
 use tokio::codec::{Encoder, Decoder};
+use tokio::executor::Spawn;
 use bytes::{BytesMut, BufMut};
-use futures::{Stream, Future, StartSend, Sink, future, IntoFuture};
+use futures::{Stream, Future, StartSend, Sink, future, IntoFuture, Join};
 use futures::stream::{SplitSink, SplitStream, ForEach};
+use futures::sync::mpsc::{unbounded, UnboundedSender, UnboundedReceiver};
 use parking_lot::RwLock;
 use failure::Error;
 
 use beserial::{Serialize, Deserialize, WriteBytesExt, ReadBytesExt, BigEndian};
 
 use crate::handel::Message;
-
+use futures::future::FutureResult;
 
 
 #[derive(Debug, Default)]
@@ -33,51 +35,78 @@ impl Statistics {
     }
 }
 
-pub trait Handler {
-    type Result: IntoFuture<Item=(), Error=IoError>;
 
-    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Self::Result;
+pub trait Handler {
+    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Box<dyn Future<Item=(), Error=IoError> + Send>;
 }
 
 
-pub type Incoming = ForEach<
-    SplitStream<UdpFramed<Codec>>,
-    Box<dyn FnMut((Message, SocketAddr)) -> Result<(), IoError> + Send>,
-    Result<(), IoError>
->;
+pub type HandelSink = UnboundedSender<(Message, SocketAddr)>;
+pub type HandelStream = SplitStream<UdpFramed<Codec>>;
 
 
 pub struct UdpNetwork {
     pub statistics: Arc<RwLock<Statistics>>,
-    pub sink: SplitSink<UdpFramed<Codec>>,
-    pub incoming: Incoming,
+    sender: UnboundedSender<(Message, SocketAddr)>,
+    receiver: Option<UnboundedReceiver<(Message, SocketAddr)>>,
 }
+
+type UdpNetworkFuture = Box<dyn Future<Item=(), Error=()> + Send>;
 
 impl UdpNetwork {
-    pub fn new<H: Handler + Send + 'static>(bind_to: &SocketAddr, handler: H) -> Result<Self, IoError> {
+    pub fn new() -> Self {
+        let (sender, receiver) = unbounded::<(Message, SocketAddr)>();
+        Self {
+            statistics: Arc::new(RwLock::new(Statistics::default())),
+            sender,
+            receiver: Some(receiver),
+        }
+    }
+
+    pub fn connect<H: Handler + Send + 'static>(&mut self, bind_to: &SocketAddr, handler: H) -> Result<UdpNetworkFuture, IoError> {
         // set up UDP socket
         let socket = UdpSocket::bind(bind_to)?;
-        let statistics = Arc::new(RwLock::new(Statistics::default()));
-        let framed = UdpFramed::new(socket, Codec::new(Arc::clone(&statistics)));
+        let framed = UdpFramed::new(socket, Codec::new(Arc::clone(&self.statistics)));
         let (sink, stream) = framed.split();
 
-        let incoming: Incoming = stream.for_each(Box::new(move |(message, sender_address)| {
-            debug!("Message: {:?} from {}", message, sender_address);
-            handler.on_message(message, sender_address);
-            Ok(())
-        }));
+        if let Some(receiver) = self.receiver.take() {
+            Ok(Box::new(future::lazy(move || {
+                let buf_fut = sink.send_all(receiver.map_err(|_| {
+                    warn!("Send buffer returned an error");
+                    IoError::from(ErrorKind::ConnectionReset)
+                }));
 
-        Ok(Self {
-            statistics,
-            sink,
-            incoming,
-        })
+                let buf_spawn = tokio::spawn(buf_fut.map(|(sink, source)| {
+                    warn!("Buffer thread finished");
+                }).map_err(|e| {
+                    error!("Send buffer failed: {}", e);
+                }));
+
+                let recv_spawn = tokio::spawn(stream.for_each(move |(message, sender_address)| {
+                    debug!("Received from {}: {:?}", sender_address, message);
+                    handler.on_message(message, sender_address)
+                }).or_else(|e| {
+                    error!("Receive stream error: {}", e);
+                    future::ok(())
+                }));
+
+                buf_spawn.into_future()
+                    .join(recv_spawn.into_future())
+                    .map(|_| ()) // join returns ((), ()), so map it to ()
+            })))
+        }
+        else {
+            Err(IoError::from(ErrorKind::AlreadyExists))
+        }
     }
 
-    pub fn send(&mut self, message: Message, recipient_address: &SocketAddr) -> StartSend<(Message, SocketAddr), IoError> {
-        self.sink.start_send((message, recipient_address.clone()))
+    pub fn sink(&self) -> HandelSink {
+        self.sender.clone()
     }
 }
+
+
+
 
 pub struct Codec {
     statistics: Arc<RwLock<Statistics>>,
@@ -133,7 +162,9 @@ impl Decoder for Codec {
         let frame_size = raw_frame_size.as_ref().read_u16::<BigEndian>()? as usize;
         debug!("decode: frame_size={}", frame_size);
 
-        // the frame size has already been read.
+        if frame_size > 1024 {
+            return Err(IoError::from(ErrorKind::InvalidData))
+        }
 
         // check if there is enough data in the buffer to read the whole message
         if src.remaining_mut() < frame_size {
@@ -143,12 +174,18 @@ impl Decoder for Codec {
 
         // enough bytes in buffer, deserialize the message
         let mut raw_message = src.split_to(frame_size);
-        let message: Message = Deserialize::deserialize(&mut Cursor::new(raw_message.as_ref()))?;
-
-        // statistics
-        self.statistics.write().received();
-
-        Ok(Some(message))
+        let decoded = Deserialize::deserialize(&mut Cursor::new(raw_message.as_ref()));
+        match decoded {
+            Ok(message) => {
+                // statistics
+                self.statistics.write().received();
+                Ok(Some(message))
+            },
+            Err(e) => {
+                warn!("Failed deserializing message: {:?}", e);
+                Err(e.into())
+            }
+        }
     }
 }
 
