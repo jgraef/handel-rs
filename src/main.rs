@@ -10,6 +10,7 @@ extern crate failure;
 extern crate hex;
 extern crate futures_cpupool;
 extern crate tokio_timer;
+extern crate rand_chacha;
 
 extern crate beserial;
 #[macro_use]
@@ -21,18 +22,19 @@ extern crate nimiq_block_albatross as block;
 
 
 mod handel;
+mod testnet;
 
 
 use std::io::Error as IoError;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::error::Error;
 use std::time::Duration;
 
-use futures::{Future, Stream};
+use futures::{Future, Stream, future};
 use log::Level;
 use clap::{App, Arg};
 use rand::rngs::OsRng;
+use failure::Error;
 
 use beserial::Deserialize;
 use hash::{Hash, Blake2bHash};
@@ -41,9 +43,10 @@ use bls::bls12_381::{PublicKey, KeyPair, SecretKey};
 use crate::handel::{
     UdpNetwork, IdentityRegistry, HandelAgent, Config, Identity, Handler, AgentProcessor
 };
+use crate::testnet::TestNet;
 
 
-fn run_app() -> Result<(), Box<dyn Error>> {
+fn run_app() -> Result<(), Error> {
     // parse command line
     let matches = App::new(crate_name!())
         .version(crate_version!())
@@ -58,7 +61,7 @@ fn run_app() -> Result<(), Box<dyn Error>> {
             .long("secret-key")
             .value_name("SECRETKEY")
             .takes_value(true)
-            .required(true))
+            .required(false /* true */))
         .arg(Arg::with_name("address")
             .long("address")
             .value_name("ADDRESS")
@@ -73,13 +76,14 @@ fn run_app() -> Result<(), Box<dyn Error>> {
             .long("threshold")
             .value_name("THRESHOLD")
             .takes_value(true)
-            .required(true))
+            .required(false /* true */))
         .arg(Arg::with_name("message")
             .long("message")
             .value_name("MESSAGE")
             .takes_value(true)
-            .required(true))
+            .required(false /* true */))
         .get_matches();
+
 
     // parse secret key
     let sk_raw = hex::decode(matches.value_of("secret_key").expect("No secret key"))?;
@@ -103,18 +107,8 @@ fn run_app() -> Result<(), Box<dyn Error>> {
         key_pair,
     };
 
-    // fill `IdentityRegistry` with some mock data
-    let mut csprng = OsRng::new().expect("OS RNG not available");
-    let mut identities = IdentityRegistry::new();
-    for i in 0..16 {
-        let secret_key = SecretKey::generate(&mut csprng);
-        identities.insert(Arc::new(Identity::new(
-            i,
-            PublicKey::from_secret(&secret_key),
-            SocketAddr::new("127.0.0.1".parse()?, 12000 + i as u16),
-            1
-        )))
-    }
+    // TODO: load identities from file
+    let identity_registry = unimplemented!();
 
     // start network layer
     let mut network = UdpNetwork::new();
@@ -124,7 +118,7 @@ fn run_app() -> Result<(), Box<dyn Error>> {
     );
 
     // initialize agent
-    let agent = Arc::new(HandelAgent::new(config, identities, network.sink()));
+    let agent = Arc::new(HandelAgent::new(config, identity_registry, network.sink()));
 
     let main_fut = network
         .connect(&bind_to, Arc::clone(&agent))
@@ -137,11 +131,33 @@ fn run_app() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+
+fn run_testnet() -> Result<(), Error> {
+    let num_nodes = 3;
+
+    // create testnet
+    let mut seed = [0; 32];
+    seed.copy_from_slice(b"HandelTestNetSeed_______________");
+    let testnet = TestNet::new(num_nodes, seed);
+
+    let mut nodes = Vec::new();
+    for id in 0..num_nodes {
+        nodes.push(testnet.create_node(id));
+    }
+
+    // run everything
+    tokio::run(future::join_all(nodes)
+        .map(|_| ()));
+
+    Ok(())
+}
+
+
 fn main() {
     simple_logger::init_with_level(Level::Debug)
         .expect("Failed to initialize Logging");
 
-    if let Err(e) = run_app() {
+    if let Err(e) = run_testnet() {
         error!("Error: {}", e);
     }
 }
