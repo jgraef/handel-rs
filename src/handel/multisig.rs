@@ -1,6 +1,15 @@
+use failure::Fail;
+
 use beserial::{Serialize, Deserialize, ReadBytesExt, WriteBytesExt, SerializingError};
 use bls::bls12_381::{AggregateSignature, Signature};
 use collections::bitset::BitSet;
+
+
+#[derive(Clone, Debug, Fail)]
+pub enum MultiSigError {
+    #[fail(display = "Signatures are overlapping: {:?}", _0)]
+    Overlapping(BitSet),
+}
 
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -34,8 +43,23 @@ impl MultiSignature {
         self.signers.len()
     }
 
+    pub fn combine(&mut self, other: &MultiSignature) -> Result<(), MultiSigError> {
+        // TODO: If we don't need the overlapping IDs for the error, we can use `intersection_size`
+        let overlap = &self.signers & &other.signers;
+
+        if overlap.is_empty() {
+            self.signature.merge_into(&other.signature);
+            self.signers = &self.signers & &other.signers;
+            Ok(())
+        }
+        else {
+            Err(MultiSigError::Overlapping(overlap))
+        }
+    }
+
     // TODO: verify, etc.
 }
+
 
 /*
 impl Serialize for MultiSignature {

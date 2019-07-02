@@ -173,7 +173,7 @@ impl Decoder for Codec {
         }
 
         // enough bytes in buffer, deserialize the message
-        let mut raw_message = src.split_to(frame_size);
+        let raw_message = src.split_to(frame_size);
         let decoded = Deserialize::deserialize(&mut Cursor::new(raw_message.as_ref()));
         match decoded {
             Ok(message) => {

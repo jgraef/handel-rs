@@ -1,7 +1,10 @@
+use std::ops::RangeInclusive;
+
 use failure::Fail;
 
 use crate::handel::utils::log2;
-use std::ops::RangeInclusive;
+use crate::handel::MultiSignature;
+
 
 
 #[derive(Clone, Debug, Fail, PartialEq)]
@@ -56,6 +59,16 @@ impl BinomialPartitioner {
 
             Ok(min ..= max)
         }
+    }
+
+    pub fn combine(&self, signatures: Vec<&MultiSignature>, level: usize) -> Option<MultiSignature> {
+        let mut combined = (*signatures.first()?).clone();
+
+        for signature in signatures.iter().skip(1) {
+            combined.combine(signature);
+        }
+
+        Some(combined)
     }
 }
 

@@ -9,6 +9,7 @@ extern crate bytes;
 extern crate failure;
 extern crate hex;
 extern crate futures_cpupool;
+extern crate tokio_timer;
 
 extern crate beserial;
 #[macro_use]
@@ -26,6 +27,7 @@ use std::io::Error as IoError;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::error::Error;
+use std::time::Duration;
 
 use futures::{Future, Stream};
 use log::Level;
@@ -90,11 +92,15 @@ fn run_app() -> Result<(), Box<dyn Error>> {
         message_hash: matches.value_of("message").expect("No message").hash::<Blake2bHash>(),
         node_identity: Arc::new(Identity::new(
             matches.value_of("id").expect("No ID").parse()?,
-            key_pair.public,
+            key_pair.public.clone(),
             matches.value_of("address").expect("No address").parse()?,
             1
         )),
         disable_shuffling: true,
+        update_count: 1,
+        update_period: Duration::from_millis(100),
+        peer_count: 10,
+        key_pair,
     };
 
     // fill `IdentityRegistry` with some mock data

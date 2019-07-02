@@ -23,3 +23,4 @@ pub use partitioner::BinomialPartitioner;
 pub use network::{UdpNetwork, HandelStream, HandelSink, Handler};
 pub use store::{SignatureStore, ReplaceStore};
 pub use verifier::{Verifier, VerifyResult, VerifyFuture};
+pub use timeout::{TimeoutStrategy, LinearTimeout};

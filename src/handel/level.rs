@@ -2,18 +2,19 @@ use std::cmp::min;
 use std::sync::Arc;
 
 use rand::thread_rng;
+use parking_lot::RwLock;
 
 use crate::handel::{MultiSignature, BinomialPartitioner, Config};
 use rand::seq::SliceRandom;
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Level {
     pub id: usize,
     pub peer_ids: Vec<usize>,
     pub send_started: bool,
     pub receive_completed: bool,
-    pub send_peers_pos: usize,
+    pub send_peers_pos: RwLock<usize>,
     pub send_peers_count: usize,
     pub send_expected_full_size: usize,
     pub send_signature_size: usize,
@@ -26,7 +27,7 @@ impl Level {
             peer_ids,
             send_started: false,
             receive_completed: false,
-            send_peers_pos: 0,
+            send_peers_pos: RwLock::new(0),
             send_peers_count: 0,
             send_expected_full_size,
             send_signature_size: 0
@@ -49,17 +50,18 @@ impl Level {
 
             if !config.disable_shuffling {
                 ids.shuffle(&mut rng);
-                let size = ids.len();
-                let mut level = Level::new(i, ids, send_expected_full_size);
-
-                if !first_active {
-                    first_active = true;
-                    level.send_started = true;
-                }
-
-                levels.push(level);
-                send_expected_full_size += size;
             }
+
+            let size = ids.len();
+            let mut level = Level::new(i, ids, send_expected_full_size);
+
+            if !first_active {
+                first_active = true;
+                level.send_started = true;
+            }
+
+            levels.push(level);
+            send_expected_full_size += size;
         }
 
         levels
@@ -69,16 +71,18 @@ impl Level {
         self.send_started && self.send_peers_count < self.peer_ids.len()
     }
 
-    pub fn select_next_peers(&mut self, count: usize) -> Vec<usize> {
+    pub fn select_next_peers(&self, count: usize) -> Vec<usize> {
         let size = min(count, self.peer_ids.len());
         let mut selected: Vec<usize> = Vec::new();
 
+        // we lock only seend_peers_pos, such that we can use Level with interior mutability
+        let mut send_peers_pos = self.send_peers_pos.write();
         for _ in 0..size {
             // NOTE: Unwrap is safe, since we make sure at least `size` elements are in `self.peers`
-            selected.push(*self.peer_ids.get(self.send_peers_pos).unwrap());
-            self.send_peers_pos += 1;
-            if self.send_peers_pos >= self.peer_ids.len() {
-                self.send_peers_pos = 0;
+            selected.push(*self.peer_ids.get(*send_peers_pos).unwrap());
+            *send_peers_pos += 1;
+            if *send_peers_pos >= self.peer_ids.len() {
+                *send_peers_pos = 0;
             }
         }
 

@@ -6,19 +6,22 @@ use std::convert::TryInto;
 
 use parking_lot::RwLock;
 use failure::{Fail, Error};
-use futures::{Future, future, Join, Stream};
+use futures::{Future, future, Join, Stream, IntoFuture};
 use futures::future::{FutureResult, Either, ok};
 use futures_cpupool::CpuFuture;
+use tokio::timer::Interval;
 
 use beserial::Serialize;
 use bls::bls12_381::Signature;
 
 use crate::handel::{
     IdentityRegistry, Message, Config, BinomialPartitioner, Level, MultiSignature, Handler,
-    SignatureStore, ReplaceStore, Verifier, VerifyResult, Identity, HandelSink, HandelStream
+    SignatureStore, ReplaceStore, Verifier, VerifyResult, Identity, HandelSink, HandelStream,
+    LinearTimeout
 };
 use futures::sync::mpsc::SendError;
 use futures::executor::Spawn;
+use crate::handel::timeout::TimeoutStrategy;
 
 
 #[derive(Debug, Fail)]
@@ -93,13 +96,32 @@ impl HandelState {
 
 
 pub struct HandelAgent {
+    /// State that is modified from multiple threads
     state: RwLock<HandelState>,
+
+    /// Handel configuration
     config: Config,
+
+    /// All known identities
     identities: Arc<IdentityRegistry>,
+
+    /// Partitions IDs into levels
     partitioner: Arc<BinomialPartitioner>,
-    levels: Vec<Level>,
+
+    /// Multi-threaded signature verification
     verifier: Verifier,
+
+    /// Sink to send messages to other peers
     sink: HandelSink,
+
+    /// Level timeouts
+    timeouts: LinearTimeout,
+
+    /// Our individual signature
+    individual: Signature,
+
+    /// Levels
+    levels: Vec<Level>,
 }
 
 
@@ -110,7 +132,7 @@ impl HandelAgent {
         info!(" - Address: {}", config.node_identity.address);
         info!(" - Public Key: {}", hex::encode(config.node_identity.public_key.serialize_to_vec()));
 
-        info!("Identities:");
+        info!("Identities (n={}):", identities.len());
         let mut max_id = 0;
         for identity in identities.all().iter() {
             let pk_hex = &hex::encode(identity.public_key.serialize_to_vec())[0..8];
@@ -118,11 +140,22 @@ impl HandelAgent {
             max_id = max_id.max(identity.id);
         }
 
+        // initialize EVERYTHING!
         let identities = Arc::new(identities);
         let partitioner = Arc::new(BinomialPartitioner::new(config.node_identity.id, max_id));
         let levels = Level::create_levels(&config, Arc::clone(&partitioner));
-        let store = ReplaceStore::new(Arc::clone(&partitioner));
+        let mut store = ReplaceStore::new(Arc::clone(&partitioner));
         let verifier = Verifier::new(config.threshold, config.message_hash.clone(), Arc::clone(&identities), None);
+        let individual = config.individual_signature();
+
+        // put our own individual signature into store
+        store.put_individual(individual.clone(), 0, config.node_identity.id);
+        store.put_multisig(MultiSignature::from_individual(&individual, config.node_identity.id), 0);
+
+        /*debug!("Levels (n={}):", levels.len());
+        for level in levels.iter() {
+            debug!("  Level {}: {:#?}", level.id, level);
+        }*/
 
         HandelAgent {
             state: RwLock::new(HandelState {
@@ -133,13 +166,15 @@ impl HandelAgent {
             config,
             identities,
             partitioner,
-            levels,
             verifier,
             sink,
+            timeouts: LinearTimeout::default(),
+            individual,
+            levels,
         }
     }
 
-    pub fn send_to(&self, to: Vec<Arc<Identity>>, multisig: MultiSignature, individual: Option<Signature>, level: usize) -> Result<(), SendError<(Message, SocketAddr)>> {
+    fn send_to(&self, to: Vec<usize>, multisig: MultiSignature, individual: Option<Signature>, level: usize) -> Result<(), SendError<(Message, SocketAddr)>> {
         let message = Message {
             origin: self.config.node_identity.id as u16,
             level: level as u8,
@@ -147,11 +182,47 @@ impl HandelAgent {
             individual,
         };
 
+        debug!("Sending to {:?}: {:?}", to, message);
+
         for id in to {
-            self.sink.unbounded_send((message.clone(), id.address.clone()))?;
+            if let Some(identity) = self.identities.get_by_id(id) {
+                self.sink.unbounded_send((message.clone(), identity.address.clone()))
+                    .map_err(|e| {
+                        error!("Send failed: {}", e);
+                        e
+                    })?;
+            }
+            else {
+                error!("Unknown identity: id={}", id);
+            }
         }
 
         Ok(())
+    }
+
+    fn on_timeout(&self, level: usize) {
+
+    }
+
+    /// Periodic update:
+    ///  - check if timeout for level is reached. TODO: This is done with `on_timeout`
+    ///  - send a new packet ???
+    fn on_update(&self) {
+        let mut state = self.state.write();
+
+        // NOTE: Skip level 0
+        for level in self.levels.iter().skip(1) {
+            debug!("send update for level {}", level.id);
+            // send update
+            if let Some(multisig) = state.store.combined(level.id - 1) {
+                let peer_ids = level.select_next_peers(self.config.update_count);
+
+                let individual = if level.receive_completed { None } else { Some(self.individual.clone()) };
+
+                // TODO: This can fail
+                self.send_to(peer_ids, multisig.clone(), individual, level.id);
+            }
+        }
     }
 }
 
@@ -165,8 +236,36 @@ pub trait AgentProcessor {
 impl AgentProcessor for Arc<HandelAgent> {
     fn spawn(&self) -> AgentFuture {
         let agent = Arc::clone(self);
+
         Box::new(future::lazy(move || {
-            future::ok::<(), ()>(())
+            let timeouts = {
+                let timeouts = agent.timeouts.timeouts(agent.levels.len());
+                let agent = Arc::clone(&agent);
+                tokio::spawn(timeouts.for_each(move |level| {
+                    //debug!("Timeout for level {}", level);
+                    agent.on_timeout(level);
+                    future::ok(())
+                })).into_future()
+            };
+
+            let updates = {
+                let updates = Interval::new_interval(agent.config.update_period);
+                let agent = Arc::clone(&agent);
+                tokio::spawn(updates
+                    .map_err(|e| {
+                        error!("Interval error: {}", e);
+                    })
+                    .for_each(move |t| {
+                        //debug!("Periodic update: {:?}", t);
+                        agent.on_update();
+                        future::ok::<(), ()>(())
+                    })
+                ).into_future()
+            };
+
+            timeouts
+                .join(updates)
+                .map(|_| ())
         }))
     }
 }

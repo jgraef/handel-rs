@@ -16,7 +16,7 @@ pub trait SignatureStore {
     fn put_multisig(&mut self, multisig: MultiSignature, level: usize);
 
     fn best(&self, level: usize) -> Option<&MultiSignature>;
-    fn combined(&self, level: usize) -> Option<&MultiSignature>;
+    fn combined(&self, level: usize) -> Option<MultiSignature>;
 }
 
 
@@ -158,7 +158,21 @@ impl SignatureStore for ReplaceStore {
         self.multisig_best.get(&level)
     }
 
-    fn combined(&self, level: usize) -> Option<&MultiSignature> {
-        unimplemented!()
+    fn combined(&self, mut level: usize) -> Option<MultiSignature> {
+        let mut signatures = Vec::new();
+        for (i, signature) in self.multisig_best.range(0 ..= level) {
+            if *i + 1 > signatures.len()  {
+                warn!("MultiSignature missing for level {}", i);
+                return None;
+            }
+            signatures.push(signature)
+        }
+
+        // ???
+        if level < self.partitioner.num_levels - 1 {
+            level += 1;
+        }
+
+        self.partitioner.combine(signatures, level)
     }
 }
