@@ -63,6 +63,7 @@ impl Verifier {
             else {
                 VerifyResult::UnknownSigner { signer }
             };
+            info!("Verified signature from node {}: {:?}", signer, result);
             future::ok::<VerifyResult, ()>(result)
         })
     }

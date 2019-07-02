@@ -201,7 +201,7 @@ impl SignatureStore for ReplaceStore {
         let mut signatures = Vec::new();
         for (i, signature) in self.multisig_best.range(0 ..= level) {
             if *i + 1 > signatures.len()  {
-                warn!("MultiSignature missing for level {}", i);
+                //warn!("MultiSignature missing for level {}", i);
                 return None;
             }
             signatures.push(signature)

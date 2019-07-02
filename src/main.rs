@@ -133,7 +133,7 @@ fn run_app() -> Result<(), Error> {
 
 
 fn run_testnet() -> Result<(), Error> {
-    let num_nodes = 3;
+    let num_nodes = 8;
 
     // create testnet
     let mut seed = [0; 32];
