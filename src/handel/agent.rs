@@ -10,6 +10,9 @@ use futures::{Future, future, Join, Stream, IntoFuture};
 use futures::future::{FutureResult, Either, ok};
 use futures_cpupool::CpuFuture;
 use tokio::timer::Interval;
+use futures::sync::mpsc::SendError;
+use futures::executor::Spawn;
+use futures::sync::oneshot::{Sender, channel, Receiver};
 
 use beserial::Serialize;
 use bls::bls12_381::Signature;
@@ -17,11 +20,8 @@ use bls::bls12_381::Signature;
 use crate::handel::{
     IdentityRegistry, Message, Config, BinomialPartitioner, Level, MultiSignature, Handler,
     SignatureStore, ReplaceStore, Verifier, VerifyResult, Identity, HandelSink, HandelStream,
-    LinearTimeout
+    LinearTimeout, TimeoutStrategy
 };
-use futures::sync::mpsc::SendError;
-use futures::executor::Spawn;
-use crate::handel::timeout::TimeoutStrategy;
 
 
 #[derive(Debug, Fail)]
@@ -80,28 +80,7 @@ pub struct HandelState {
     pub store: ReplaceStore,
 }
 
-impl HandelState {
-    fn get_best_todo(&mut self) -> Option<(Todo, usize)> {
-        let mut best_i = 0;
-        let mut best_score = self.todos.first()?.evaluate(&self.store);
-
-        for (i, todo) in self.todos.iter().enumerate().skip(1) {
-            let score = todo.evaluate(&self.store);
-            if score > best_score {
-                best_i = i;
-                best_score = score;
-            }
-        }
-        if best_score > 0 {
-            let best_todo = self.todos.swap_remove(best_i);
-            Some((best_todo, best_score))
-        }
-        else {
-            None
-        }
-    }
-}
-
+type HandelResult = Result<MultiSignature, ()>;
 
 pub struct HandelAgent {
     /// State that is modified from multiple threads
@@ -130,6 +109,10 @@ pub struct HandelAgent {
 
     /// Levels
     levels: Vec<Level>,
+
+    /// Channel to pass final signature
+    result_sender: Sender<HandelResult>,
+    result_receiver: Option<Receiver<HandelResult>>
 }
 
 
@@ -159,6 +142,8 @@ impl HandelAgent {
         let mut store = ReplaceStore::new(Arc::clone(&partitioner));
         let verifier = Verifier::new(config.threshold, config.message_hash.clone(), Arc::clone(&identities), None);
         let individual = config.individual_signature();
+        let timeouts = LinearTimeout::new(config.timeout);
+        let (result_sender, result_receiver) = channel();
 
         HandelAgent {
             state: RwLock::new(HandelState {
@@ -171,10 +156,16 @@ impl HandelAgent {
             partitioner,
             verifier,
             sink,
-            timeouts: LinearTimeout::default(),
+            timeouts,
             individual,
             levels,
+            result_sender,
+            result_receiver: Some(result_receiver)
         }
+    }
+
+    pub fn final_signature(&mut self) -> Option<Receiver<HandelResult>> {
+        self.result_receiver.take()
     }
 
     fn send_to(&self, to: Vec<usize>, multisig: MultiSignature, individual: Option<Signature>, level: usize) -> Result<(), SendError<(Message, SocketAddr)>> {
@@ -185,9 +176,12 @@ impl HandelAgent {
             individual,
         };
 
-        debug!("Sending to {:?}: {:?}", to, message);
+        //debug!("Sending to {:?}: {:?}", to, message);
 
         for id in to {
+            if id == self.config.node_identity.id {
+                continue;
+            }
             if let Some(identity) = self.identities.get_by_id(id) {
                 self.sink.unbounded_send((message.clone(), identity.address.clone()))
                     .map_err(|e| {
@@ -204,6 +198,21 @@ impl HandelAgent {
     }
 
     fn on_timeout(&self, level: usize) {
+        self.start_level(level);
+    }
+
+    fn start_level(&self, level: usize) {
+        debug!("Starting level {}", level);
+
+        let level = self.levels.get(level)
+            .unwrap_or_else(|| panic!("Timeout for invalid level {}", level));
+
+        level.start();
+        if level.id > 0 {
+            if let Some(best) = self.state.read().store.combined(level.id - 1) {
+                self.send_update(best, level, self.config.peer_count);
+            }
+        }
 
     }
 
@@ -224,6 +233,8 @@ impl HandelAgent {
     }
 
     fn check_completed_level(&self, todo: &Todo) {
+        debug!("check_completed_level: {:?}", todo);
+
         if let Some(level) = self.levels.get(todo.level()) {
             let state = self.state.read();
 
@@ -231,15 +242,22 @@ impl HandelAgent {
                 let mut level_state = level.state.write();
 
                 if level_state.receive_completed {
+                    debug!("check_completed_level: receive_completed=true");
                     return
                 }
 
                 let best = state.store.best(todo.level())
                     .unwrap_or_else(|| panic!("We should have received the best signature for level {}", todo.level()));
 
+                debug!("check_completed_level: level={}, best.len={}, num_peers={}", level.id, best.len(), level.num_peers());
                 if best.len() == level.num_peers() {
                     info!("Level {} complete", todo.level());
                     level_state.receive_completed = true;
+
+                    if todo.level() + 1 < self.levels.len() {
+                        // activate next level
+                        self.start_level(todo.level() + 1)
+                    }
                 }
             }
 
@@ -253,21 +271,61 @@ impl HandelAgent {
                 }
             }
         }
+        else {
+            error!("Invalid level: {}", todo.level());
+        }
     }
 
     fn check_final_signature(&self, todo: &Todo) {
+        let last_level = self.levels.last().expect("No levels");
 
+        if last_level.state.read().receive_completed {
+            info!("Last level finished receiving");
+            if let Some(combined) = self.state.read().store.combined(last_level.id) {
+                debug!("Last level combined: {:#?}", combined);
+                // TODO: This consumes the sender
+                //self.result_sender.send(Ok(combined));
+                panic!("Done :)");
+            }
+            else {
+                warn!("store.combined() returned None");
+            }
+        }
     }
 
     fn send_update(&self, multisig: MultiSignature, level: &Level, count: usize) {
-        info!("Sending updates");
         let peer_ids = level.select_next_peers(count);
 
-        //let individual = if level.receive_completed { None } else { Some(self.individual.clone()) };
-        let individual = Some(self.individual.clone());
+        let individual = if level.state.read().receive_completed { None } else { Some(self.individual.clone()) };
+        //let individual = Some(self.individual.clone());
 
         // TODO: This can fail
         self.send_to(peer_ids, multisig, individual, level.id);
+    }
+
+    fn get_best_todo(&self) -> Option<(Todo, usize)> {
+        let state = self.state.upgradable_read();
+
+        let mut best_i = 0;
+        let mut best_score = state.todos.first()?.evaluate(&state.store);
+
+        for (i, todo) in state.todos.iter().enumerate().skip(1) {
+            let score = todo.evaluate(&state.store);
+            if score > best_score {
+                best_i = i;
+                best_score = score;
+            }
+        }
+
+        //debug!("Best score: {}", best_score);
+        if best_score > 0 {
+            let mut state = RwLockUpgradableReadGuard::upgrade(state);
+            let best_todo = state.todos.swap_remove(best_i);
+            Some((best_todo, best_score))
+        }
+        else {
+            None
+        }
     }
 }
 
@@ -314,11 +372,11 @@ impl AgentProcessor for Arc<HandelAgent> {
             let init = {
                 let agent = Arc::clone(&agent);
                 future::lazy(move || {
-                    // put own individual signature into store
                     let mut state = agent.state.write();
+
+                    // put own individual signature into store
                     //state.store.put_individual(agent.individual.clone(), 0, agent.config.node_identity.id);
                     //state.store.put_multisig(MultiSignature::from_individual(&agent.individual, agent.config.node_identity.id), 0);
-
                     let todo = Todo::Individual { signature: agent.individual.clone(), level: 0, origin: agent.config.node_identity.id };
                     todo.clone().put(&mut state.store);
 
@@ -327,6 +385,11 @@ impl AgentProcessor for Arc<HandelAgent> {
                     // notify
                     agent.check_completed_level(&todo);
                     agent.check_final_signature(&todo);
+
+                    // send level 0
+                    let level = agent.levels.get(0)
+                        .expect("Level 0 missing");
+                    agent.send_update(MultiSignature::from_individual(&agent.individual, agent.config.node_identity.id), level, agent.config.peer_count);
 
                     future::ok::<(), ()>(())
                 })
@@ -358,7 +421,16 @@ impl Handler for Arc<HandelAgent> {
             let origin = origin as usize;
             let level = level as usize;
 
-            info!("Received message from address={} id={} for level={}", sender_address, origin, level);
+            if let Some(level) = self.levels.get(level) {
+                if level.state.read().receive_completed {
+                    return Box::new(future::ok::<(), IoError>(()));
+                }
+            }
+            else {
+                error!("Invalid level in message: {}", level);
+            }
+
+            //info!("Received message from address={} id={} for level={}", sender_address, origin, level);
 
             // XXX The following code should all be a future. The part that takes ultimately the
             //     longest will be the signature checking, so we could distribute that over a
@@ -367,13 +439,14 @@ impl Handler for Arc<HandelAgent> {
             // Creates a future that will verify the multisig on a CpuPool and then push it into
             // the TODOs
             let this = Arc::clone(&self);
-            let multisig_fut = self.verifier.verify_multisig(multisig.clone())
+            let multisig_fut = self.verifier.verify_multisig(multisig.clone(), false)
                 .and_then(move|result| {
                     if result == VerifyResult::Ok {
                         this.state.write().todos.push(Todo::Multi { signature: multisig, level });
                     }
                     else {
                         warn!("Rejected signature: {:?}", result);
+                        warn!("{:#?}", multisig);
                     }
                     Ok(())
                 });
@@ -403,7 +476,8 @@ impl Handler for Arc<HandelAgent> {
                 .join(individual_fut)
                 .and_then(move |_| {
                     // continuously put best todo into store, until there is no good one anymore
-                    while let Some((todo, score)) = this.state.write().get_best_todo() {
+                    while let Some((todo, score)) = this.get_best_todo() {
+                        info!("Processing: score={}: {:?}", score, todo);
                         // TODO: put signature from todo into store - is this correct?
                         todo.clone().put(&mut this.state.write().store);
                         this.check_completed_level(&todo);

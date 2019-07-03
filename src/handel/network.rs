@@ -71,10 +71,12 @@ impl UdpNetwork {
 
         if let Some(receiver) = self.receiver.take() {
             Ok(Box::new(future::lazy(move || {
-                let buf_fut = sink.send_all(receiver.map_err(|_| {
-                    warn!("Send buffer returned an error");
-                    IoError::from(ErrorKind::ConnectionReset)
-                }));
+                let buf_fut = sink.send_all(receiver
+                    .map_err(|_| {
+                        error!("Send buffer returned an error");
+                        IoError::from(ErrorKind::ConnectionReset)
+                    })
+                );
 
                 let buf_spawn = tokio::spawn(buf_fut.map(|(sink, source)| {
                     warn!("Buffer thread finished");
@@ -83,7 +85,7 @@ impl UdpNetwork {
                 }));
 
                 let recv_spawn = tokio::spawn(stream.for_each(move |(message, sender_address)| {
-                    debug!("Received from {}: {:?}", sender_address, message);
+                    //debug!("Received from {}: {:?}", sender_address, message);
                     handler.on_message(message, sender_address)
                 }).or_else(|e| {
                     error!("Receive stream error: {}", e);
@@ -125,6 +127,8 @@ impl Encoder for Codec {
     type Error = IoError;
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        //info!("Sending message: {:?}", item);
+
         // reserve enough space in buffer
         dst.reserve(item.serialized_size() + 2);
 
@@ -148,9 +152,6 @@ impl Decoder for Codec {
     type Error = IoError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        // the frame size is unknown, therefore we have to read it first
-        debug!("decode: remaining_mut={}", src.remaining_mut());
-
         // check if there is a u16 representing the frame size
         if src.remaining_mut() < 2 {
             // less than 2 bytes in buffer, thus we can't read the frame length
@@ -160,7 +161,6 @@ impl Decoder for Codec {
         // more than 2 bytes in buffer, read the frame length
         let raw_frame_size = src.split_to(2);
         let frame_size = raw_frame_size.as_ref().read_u16::<BigEndian>()? as usize;
-        debug!("decode: frame_size={}", frame_size);
 
         if frame_size > 1024 {
             return Err(IoError::from(ErrorKind::InvalidData))

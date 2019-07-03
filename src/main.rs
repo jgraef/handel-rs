@@ -103,6 +103,7 @@ fn run_app() -> Result<(), Error> {
         disable_shuffling: true,
         update_count: 1,
         update_period: Duration::from_millis(100),
+        timeout: Duration::from_millis(500),
         peer_count: 10,
         key_pair,
     };

@@ -51,7 +51,7 @@ impl MultiSignature {
 
         if overlap.is_empty() {
             self.signature.merge_into(&other.signature);
-            self.signers = &self.signers & &other.signers;
+            self.signers = &self.signers | &other.signers;
             Ok(())
         }
         else {

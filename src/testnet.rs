@@ -77,7 +77,8 @@ impl TestNet {
             node_identity: Arc::new(self.identity(id)),
             disable_shuffling: true,
             update_count: 1,
-            update_period: Duration::from_millis(100),
+            update_period: Duration::from_millis(1000),
+            timeout: Duration::from_millis(5000),
             peer_count: 10,
             key_pair: self.key_pair(id),
         }

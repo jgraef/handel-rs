@@ -51,7 +51,7 @@ impl Level {
         let mut send_expected_full_size: usize = 1;
         let mut rng = thread_rng();
 
-        for i in 0..partitioner.num_levels {
+        for i in 0 .. partitioner.num_levels {
             debug!("Creating level {}", i);
 
             // This unwrap is safe, since we only iterate until `num_levels - 1`
@@ -116,5 +116,9 @@ impl Level {
         }
 
         false
+    }
+
+    pub fn start(&self) {
+        self.state.write().send_started = true;
     }
 }

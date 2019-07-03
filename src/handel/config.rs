@@ -27,6 +27,9 @@ pub struct Config {
     /// Frequency at which updates are sent to peers
     pub update_period: Duration,
 
+    /// Timeout for levels
+    pub timeout: Duration,
+
     /// How many peers are contacted at each level ???
     pub peer_count: usize,
 

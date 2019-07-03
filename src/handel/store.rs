@@ -111,7 +111,15 @@ impl ReplaceStore {
 
 impl SignatureStore for ReplaceStore {
     fn evaluate_individual(&self, individual: &Signature, level: usize, peer_id: usize) -> usize {
-        unimplemented!()
+        if self.individual_signatures.get(level)
+            .unwrap_or_else(|| panic!("No individual signatures for level {}", level))
+            .get(&peer_id).is_some() {
+            //debug!("Individual signature already known");
+            0
+        }
+        else {
+            self.evaluate_multisig(&MultiSignature::from_individual(individual, peer_id), level)
+        }
     }
 
     fn evaluate_multisig(&self, multisig: &MultiSignature, level: usize) -> usize {
@@ -121,19 +129,23 @@ impl SignatureStore for ReplaceStore {
         let best_signature = self.multisig_best.get(&level);
 
         if let Some(best_signature) = best_signature {
+            /*debug!("This is node {}", self.partitioner.node_id);
+            debug!("level = {}", level);
+            debug!("multisig = {:#?}", multisig);
+            debug!("best_signature = {:#?}", best_signature);*/
+
             // check if the best signature for that level is already complete
             if to_receive == best_signature.len() {
+                //debug!("Best signature already complete");
                 return 0;
             }
 
             // check if the best signature is better than the new one
             if best_signature.signers.is_superset(&multisig.signers) {
+                //debug!("Best signature is better");
                 return 0;
             }
         }
-
-        // TODO: For an individual signature we check if we have a verified individual signature for that level
-
 
         let with_individuals = &multisig.signers
             | self.individual_verified.get(level)
@@ -143,7 +155,7 @@ impl SignatureStore for ReplaceStore {
             if multisig.signers.intersection_size(&best_signature.signers) > 0 {
                 // can't merge
                 let new_total = with_individuals.len();
-                (new_total, new_total - best_signature.len(), new_total - multisig.len())
+                (new_total, new_total.saturating_sub(best_signature.len()), new_total - multisig.len())
             }
             else {
                 let final_sig = &with_individuals | &best_signature.signers;
@@ -158,9 +170,12 @@ impl SignatureStore for ReplaceStore {
             (new_total, new_total, new_total - multisig.len())
         };
 
+        //debug!("new_total={}, added_sigs={}, combined_sigs={}", new_total, added_sigs, combined_sigs);
+
         if added_sigs == 0 {
-            // TODO: return 1 for an individual signature
-            0
+            debug!("No new signatures added");
+            // XXX return 1 for an individual signature
+            if multisig.len() == 1 { 1 } else { 0 }
         }
         else if new_total == to_receive {
             1000000 - level * 10 - combined_sigs
@@ -171,6 +186,8 @@ impl SignatureStore for ReplaceStore {
     }
 
     fn put_individual(&mut self, individual: Signature, level: usize, peer_id: usize) {
+        //info!("Putting individual signature into store: level={}, id={}", level, peer_id);
+
         let multisig = MultiSignature::from_individual(&individual, peer_id);
 
         self.individual_verified.get_mut(level)
@@ -185,7 +202,10 @@ impl SignatureStore for ReplaceStore {
     }
 
     fn put_multisig(&mut self, multisig: MultiSignature, level: usize) {
+        //info!("Putting multi-signature into store: level={}, ids={}", level, multisig.signers);
+
         if let Some(best_multisig) = self.check_merge(&multisig, level) {
+            //debug!("Changing best multisig for level {}: signers={}", level, multisig.signers);
             self.multisig_best.insert(level, best_multisig);
             if level > self.best_level {
                 self.best_level = level;
@@ -199,9 +219,9 @@ impl SignatureStore for ReplaceStore {
 
     fn combined(&self, mut level: usize) -> Option<MultiSignature> {
         let mut signatures = Vec::new();
-        for (i, signature) in self.multisig_best.range(0 ..= level) {
-            if *i + 1 > signatures.len()  {
-                //warn!("MultiSignature missing for level {}", i);
+        for (&i, signature) in self.multisig_best.range(0 ..= level) {
+            if i > signatures.len()  {
+                //warn!("MultiSignature missing for level {} to {}", signatures.len(), i - 1);
                 return None;
             }
             signatures.push(signature)
@@ -212,6 +232,13 @@ impl SignatureStore for ReplaceStore {
             level += 1;
         }
 
-        self.partitioner.combine(signatures, level)
+        //debug!("Combining signatures for level {}: {:?}", level, signatures);
+        let combined = self.partitioner.combine(signatures, level);
+        if let Some(sig) = &combined {
+            if sig.signers.len() == 16 {
+                panic!("Got all signatures!");
+            }
+        }
+        combined
     }
 }

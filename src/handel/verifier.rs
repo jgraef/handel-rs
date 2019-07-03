@@ -63,12 +63,11 @@ impl Verifier {
             else {
                 VerifyResult::UnknownSigner { signer }
             };
-            info!("Verified signature from node {}: {:?}", signer, result);
             future::ok::<VerifyResult, ()>(result)
         })
     }
 
-    pub fn verify_multisig(&self, signature: MultiSignature) -> VerifyFuture {
+    pub fn verify_multisig(&self, signature: MultiSignature, check_threshold: bool) -> VerifyFuture {
         let identities = Arc::clone(&self.identities);
         let message_hash = self.message_hash.clone();
         let threshold = self.threshold;
@@ -87,7 +86,7 @@ impl Verifier {
                 }
             }
 
-            let result = if votes < threshold {
+            let result = if votes < threshold && check_threshold {
                 VerifyResult::ThresholdNotReached { votes, threshold }
             }
             else if public_key.verify_hash(message_hash, &signature.signature) {
