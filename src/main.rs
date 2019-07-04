@@ -11,6 +11,7 @@ extern crate hex;
 extern crate futures_cpupool;
 extern crate tokio_timer;
 extern crate rand_chacha;
+extern crate stopwatch;
 
 extern crate beserial;
 #[macro_use]
@@ -30,19 +31,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::{Future, Stream, future};
+use futures::{Future, future};
 use log::Level;
 use clap::{App, Arg};
-use rand::rngs::OsRng;
 use failure::Error;
 
 use beserial::Deserialize;
 use hash::{Hash, Blake2bHash};
-use bls::bls12_381::{PublicKey, KeyPair, SecretKey};
+use bls::bls12_381::{KeyPair};
 
-use crate::handel::{
-    UdpNetwork, IdentityRegistry, HandelAgent, Config, Identity, Handler, AgentProcessor
-};
+use crate::handel::{UdpNetwork, HandelAgent, Config, Identity, AgentProcessor, IdentityRegistry};
 use crate::testnet::TestNet;
 
 
@@ -109,7 +107,7 @@ fn run_app() -> Result<(), Error> {
     };
 
     // TODO: load identities from file
-    let identity_registry = unimplemented!();
+    let identity_registry = IdentityRegistry::new();
 
     // start network layer
     let mut network = UdpNetwork::new();
@@ -134,7 +132,20 @@ fn run_app() -> Result<(), Error> {
 
 
 fn run_testnet() -> Result<(), Error> {
-    let num_nodes = 8;
+    let matches = App::new(crate_name!())
+        .version(crate_version!())
+        .author(crate_authors!())
+        .about(crate_description!())
+        .arg(Arg::with_name("nodes")
+            .long("nodes")
+            .short("n")
+            .value_name("NUM")
+            .takes_value(true)
+            .default_value("16"))
+        .get_matches();
+
+    let num_nodes = matches.value_of("nodes").unwrap()
+        .parse().expect("Invalid number of nodes");
 
     // create testnet
     let mut seed = [0; 32];
@@ -155,7 +166,7 @@ fn run_testnet() -> Result<(), Error> {
 
 
 fn main() {
-    simple_logger::init_with_level(Level::Debug)
+    simple_logger::init_with_level(Level::Info)
         .expect("Failed to initialize Logging");
 
     if let Err(e) = run_testnet() {

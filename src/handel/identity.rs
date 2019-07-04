@@ -6,8 +6,6 @@ use std::convert::TryFrom;
 use beserial::{Serialize, Deserialize, ReadBytesExt, WriteBytesExt, SerializingError, BigEndian};
 use bls::bls12_381::PublicKey;
 
-use crate::handel::Verifier;
-
 
 
 #[derive(Clone, Debug)]

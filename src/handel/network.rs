@@ -5,24 +5,20 @@ use std::sync::Arc;
 use tokio::net::{UdpSocket, UdpFramed};
 use tokio::io::Error as IoError;
 use tokio::codec::{Encoder, Decoder};
-use tokio::executor::Spawn;
 use bytes::{BytesMut, BufMut};
-use futures::{Stream, Future, StartSend, Sink, future, IntoFuture, Join};
-use futures::stream::{SplitSink, SplitStream, ForEach};
+use futures::{Stream, Future, Sink, future, IntoFuture};
 use futures::sync::mpsc::{unbounded, UnboundedSender, UnboundedReceiver};
 use parking_lot::RwLock;
-use failure::Error;
 
 use beserial::{Serialize, Deserialize, WriteBytesExt, ReadBytesExt, BigEndian};
 
 use crate::handel::Message;
-use futures::future::FutureResult;
 
 
 #[derive(Debug, Default)]
 pub struct Statistics {
-    received_count: usize,
-    sent_count: usize,
+    pub received_count: usize,
+    pub sent_count: usize,
 }
 
 impl Statistics {
@@ -39,10 +35,6 @@ impl Statistics {
 pub trait Handler {
     fn on_message(&self, message: Message, sender_address: SocketAddr) -> Box<dyn Future<Item=(), Error=IoError> + Send>;
 }
-
-
-pub type HandelSink = UnboundedSender<(Message, SocketAddr)>;
-pub type HandelStream = SplitStream<UdpFramed<Codec>>;
 
 
 pub struct UdpNetwork {
@@ -78,7 +70,7 @@ impl UdpNetwork {
                     })
                 );
 
-                let buf_spawn = tokio::spawn(buf_fut.map(|(sink, source)| {
+                let buf_spawn = tokio::spawn(buf_fut.map(|(_sink, _source)| {
                     warn!("Buffer thread finished");
                 }).map_err(|e| {
                     error!("Send buffer failed: {}", e);
@@ -102,7 +94,7 @@ impl UdpNetwork {
         }
     }
 
-    pub fn sink(&self) -> HandelSink {
+    pub fn sink(&self) -> UnboundedSender<(Message, SocketAddr)> {
         self.sender.clone()
     }
 }

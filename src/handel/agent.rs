@@ -2,16 +2,12 @@ use std::sync::Arc;
 use std::net::SocketAddr;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
-use std::convert::TryInto;
 
-use parking_lot::{RwLock, RwLockUpgradableReadGuard};
-use failure::{Fail, Error};
-use futures::{Future, future, Join, Stream, IntoFuture};
-use futures::future::{FutureResult, Either, ok};
-use futures_cpupool::CpuFuture;
+use parking_lot::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
+use futures::{Future, future, Stream, IntoFuture};
+use futures::future::Either;
 use tokio::timer::Interval;
-use futures::sync::mpsc::SendError;
-use futures::executor::Spawn;
+use futures::sync::mpsc::{SendError, UnboundedSender};
 use futures::sync::oneshot::{Sender, channel, Receiver};
 
 use beserial::Serialize;
@@ -19,24 +15,9 @@ use bls::bls12_381::Signature;
 
 use crate::handel::{
     IdentityRegistry, Message, Config, BinomialPartitioner, Level, MultiSignature, Handler,
-    SignatureStore, ReplaceStore, Verifier, VerifyResult, Identity, HandelSink, HandelStream,
+    SignatureStore, ReplaceStore, Verifier, VerifyResult,
     LinearTimeout, TimeoutStrategy
 };
-
-
-#[derive(Debug, Fail)]
-pub enum AgentError {
-    #[fail(display = "IO error: {}", _0)]
-    Io(#[cause] IoError),
-    #[fail(display = "Aggregation finished")]
-    Done,
-}
-
-impl From<IoError> for AgentError {
-    fn from(e: IoError) -> Self {
-        AgentError::Io(e)
-    }
-}
 
 
 #[derive(Clone, Debug)]
@@ -92,14 +73,11 @@ pub struct HandelAgent {
     /// All known identities
     identities: Arc<IdentityRegistry>,
 
-    /// Partitions IDs into levels
-    partitioner: Arc<BinomialPartitioner>,
-
     /// Multi-threaded signature verification
     verifier: Verifier,
 
     /// Sink to send messages to other peers
-    sink: HandelSink,
+    sink: UnboundedSender<(Message, SocketAddr)>,
 
     /// Level timeouts
     timeouts: LinearTimeout,
@@ -111,13 +89,13 @@ pub struct HandelAgent {
     levels: Vec<Level>,
 
     /// Channel to pass final signature
-    result_sender: Sender<HandelResult>,
-    result_receiver: Option<Receiver<HandelResult>>
+    result_sender: RwLock<Option<Sender<HandelResult>>>,
+    result_receiver: RwLock<Option<Receiver<HandelResult>>>,
 }
 
 
 impl HandelAgent {
-    pub fn new(config: Config, identities: IdentityRegistry, sink: HandelSink) -> HandelAgent {
+    pub fn new(config: Config, identities: IdentityRegistry, sink: UnboundedSender<(Message, SocketAddr)>) -> HandelAgent {
         info!("New Handel Agent:");
         info!(" - ID: {}", config.node_identity.id);
         info!(" - Address: {}", config.node_identity.address);
@@ -139,7 +117,7 @@ impl HandelAgent {
         let identities = Arc::new(identities);
         let partitioner = Arc::new(BinomialPartitioner::new(config.node_identity.id, max_id));
         let levels = Level::create_levels(&config, Arc::clone(&partitioner));
-        let mut store = ReplaceStore::new(Arc::clone(&partitioner));
+        let store = ReplaceStore::new(Arc::clone(&partitioner));
         let verifier = Verifier::new(config.threshold, config.message_hash.clone(), Arc::clone(&identities), None);
         let individual = config.individual_signature();
         let timeouts = LinearTimeout::new(config.timeout);
@@ -153,19 +131,18 @@ impl HandelAgent {
             }),
             config,
             identities,
-            partitioner,
             verifier,
             sink,
             timeouts,
             individual,
             levels,
-            result_sender,
-            result_receiver: Some(result_receiver)
+            result_sender: RwLock::new(Some(result_sender)),
+            result_receiver: RwLock::new(Some(result_receiver)),
         }
     }
 
-    pub fn final_signature(&mut self) -> Option<Receiver<HandelResult>> {
-        self.result_receiver.take()
+    pub fn final_signature(&self) -> Option<Receiver<HandelResult>> {
+        self.result_receiver.write().take()
     }
 
     fn send_to(&self, to: Vec<usize>, multisig: MultiSignature, individual: Option<Signature>, level: usize) -> Result<(), SendError<(Message, SocketAddr)>> {
@@ -220,7 +197,7 @@ impl HandelAgent {
     ///  - check if timeout for level is reached. TODO: This is done with `on_timeout`
     ///  - send a new packet ???
     fn on_update(&self) {
-        let mut state = self.state.write();
+        let state = self.state.read();
 
         // NOTE: Skip level 0
         for level in self.levels.iter().skip(1) {
@@ -276,19 +253,31 @@ impl HandelAgent {
         }
     }
 
-    fn check_final_signature(&self, todo: &Todo) {
+    fn check_final_signature(&self, _todo: &Todo) {
         let last_level = self.levels.last().expect("No levels");
 
         if last_level.state.read().receive_completed {
-            info!("Last level finished receiving");
-            if let Some(combined) = self.state.read().store.combined(last_level.id) {
-                debug!("Last level combined: {:#?}", combined);
-                // TODO: This consumes the sender
-                //self.result_sender.send(Ok(combined));
-                panic!("Done :)");
+            if let Some(sender) = self.result_sender.write().take() {
+                info!("Last level finished receiving");
+
+                // set done to true
+                let mut state = self.state.write();
+                state.done = true;
+                let state = RwLockWriteGuard::downgrade(state);
+
+                if let Some(combined) = state.store.combined(last_level.id) {
+                    debug!("Last level combined: {:#?}", combined);
+                    sender.send(Ok(combined))
+                        .unwrap_or_else(|_| error!("Sending final signature to future failed"));
+                }
+                else {
+                    warn!("store.combined() returned None");
+                    sender.send(Err(()))
+                        .unwrap_or_else(|_| error!("Failed to send error to future"));
+                }
             }
             else {
-                warn!("store.combined() returned None");
+                warn!("Already produced final signature");
             }
         }
     }
@@ -297,10 +286,9 @@ impl HandelAgent {
         let peer_ids = level.select_next_peers(count);
 
         let individual = if level.state.read().receive_completed { None } else { Some(self.individual.clone()) };
-        //let individual = Some(self.individual.clone());
 
-        // TODO: This can fail
-        self.send_to(peer_ids, multisig, individual, level.id);
+        self.send_to(peer_ids, multisig, individual, level.id)
+            .unwrap_or_else(|e| error!("Failed to send message to {}", e.into_inner().1))
     }
 
     fn get_best_todo(&self) -> Option<(Todo, usize)> {
@@ -360,7 +348,7 @@ impl AgentProcessor for Arc<HandelAgent> {
                     .map_err(|e| {
                         error!("Interval error: {}", e);
                     })
-                    .for_each(move |t| {
+                    .for_each(move |_instant| {
                         //debug!("Periodic update: {:?}", t);
                         agent.on_update();
                         future::ok::<(), ()>(())
@@ -408,7 +396,7 @@ impl AgentProcessor for Arc<HandelAgent> {
 
 
 impl Handler for Arc<HandelAgent> {
-    fn on_message(&self, message: Message, sender_address: SocketAddr) -> Box<dyn Future<Item=(), Error=IoError> + Send> {
+    fn on_message(&self, message: Message, _sender_address: SocketAddr) -> Box<dyn Future<Item=(), Error=IoError> + Send> {
         // we create a future that handles the message
         let handle_fut = if !self.state.read().done {
             // deconstruct message
@@ -495,7 +483,8 @@ impl Handler for Arc<HandelAgent> {
         }
         else {
             // we're done, so we don't care
-            Either::B(future::failed(IoError::from(ErrorKind::ConnectionReset)))
+            //Either::B(future::failed(IoError::from(ErrorKind::ConnectionReset)))
+            Either::B(future::ok::<(), IoError>(()))
         };
 
         // box it, so we don't have to bother about the return type

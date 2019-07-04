@@ -2,9 +2,6 @@ use std::time::Duration;
 use std::ops::Range;
 
 use futures::{Stream, stream};
-use tokio::timer::Interval;
-use tokio_timer::throttle::Throttle;
-use futures::stream::IterOk;
 use tokio::util::StreamExt;
 
 

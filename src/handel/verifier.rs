@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use hash::{Blake2bHash, Hash};
-use bls::bls12_381::{Signature, PublicKey, AggregatePublicKey};
-use collections::bitset::BitSet;
+use hash::Blake2bHash;
+use bls::bls12_381::{Signature, AggregatePublicKey};
 use futures_cpupool::{CpuPool, CpuFuture};
-use futures::{Future, future, future::FutureResult};
+use futures::future;
+use stopwatch::Stopwatch;
 
 use crate::handel::IdentityRegistry;
 use crate::handel::MultiSignature;
@@ -52,6 +52,8 @@ impl Verifier {
         let identities = Arc::clone(&self.identities);
 
         self.workers.spawn_fn(move || {
+            let mut stopwatch = Stopwatch::start_new();
+
             let result = if let Some(identity) = identities.get_by_id(signer) {
                 if identity.public_key.verify_hash(message_hash, &signature) {
                     VerifyResult::Ok
@@ -63,6 +65,10 @@ impl Verifier {
             else {
                 VerifyResult::UnknownSigner { signer }
             };
+
+            stopwatch.stop();
+            debug!("Verifying signature took {} ms", stopwatch.elapsed_ms());
+
             future::ok::<VerifyResult, ()>(result)
         })
     }

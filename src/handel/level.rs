@@ -64,7 +64,7 @@ impl Level {
             }
 
             let size = ids.len();
-            let mut level = Level::new(i, ids, send_expected_full_size);
+            let level = Level::new(i, ids, send_expected_full_size);
 
             if !first_active {
                 first_active = true;

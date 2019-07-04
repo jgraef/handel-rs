@@ -48,7 +48,7 @@ impl ReplaceStore {
 
         let mut individual_verified = Vec::with_capacity(partitioner.num_levels);
         let mut individual_signatures = Vec::with_capacity(partitioner.num_levels);
-        for i in 0..partitioner.num_levels {
+        for _ in 0..partitioner.num_levels {
             individual_verified.push(BitSet::new());
             individual_signatures.push(BTreeMap::new());
         }
@@ -70,9 +70,7 @@ impl ReplaceStore {
 
             // we can ignore the error, if it's not possible to merge we continue
             multisig.add_multisig(best_multisig)
-                .map_err(|e| {
-                    debug!("check_merge: combining multisigs failed: {}", e);
-                });
+                .unwrap_or_else(|e| debug!("check_merge: combining multisigs failed: {}", e));
 
             let individual_verified = self.individual_verified.get(level)
                 .unwrap_or_else(|| panic!("Individual verified signatures BitSet is missing for level {}", level));
@@ -96,7 +94,7 @@ impl ReplaceStore {
 
                     // merge individual signature into multisig
                     multisig.add_individual(individual, id)
-                        .unwrap_or_else(|e| panic!("Individual signature with ID {} already included in multisig", id));
+                        .unwrap_or_else(|e| panic!("Individual signature form id={} can't be added to multisig: {}", id, e));
                 }
 
                 Some(multisig)
@@ -233,12 +231,6 @@ impl SignatureStore for ReplaceStore {
         }
 
         //debug!("Combining signatures for level {}: {:?}", level, signatures);
-        let combined = self.partitioner.combine(signatures, level);
-        if let Some(sig) = &combined {
-            if sig.signers.len() == 16 {
-                panic!("Got all signatures!");
-            }
-        }
-        combined
+        self.partitioner.combine(signatures, level)
     }
 }

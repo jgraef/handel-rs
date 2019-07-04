@@ -20,7 +20,7 @@ pub use multisig::MultiSignature;
 pub use agent::{HandelAgent, AgentProcessor};
 pub use config::Config;
 pub use partitioner::BinomialPartitioner;
-pub use network::{UdpNetwork, HandelStream, HandelSink, Handler};
+pub use network::{UdpNetwork, Handler};
 pub use store::{SignatureStore, ReplaceStore};
 pub use verifier::{Verifier, VerifyResult, VerifyFuture};
 pub use timeout::{TimeoutStrategy, LinearTimeout};

@@ -1,16 +1,17 @@
-use std::net::{SocketAddr, IpAddr, Ipv4Addr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration};
 
 use rand_chacha::ChaChaRng;
-use rand::{CryptoRng, SeedableRng};
-use futures::{future, Future, Lazy, IntoFuture};
+use rand::SeedableRng;
+use futures::{future, Future, IntoFuture};
+use stopwatch::Stopwatch;
 
 use bls::bls12_381::KeyPair;
 use hash::{Hash, Blake2bHash};
 
 use crate::handel::{
-    IdentityRegistry, Identity, Config, UdpNetwork, HandelAgent, AgentProcessor, Handler,
+    IdentityRegistry, Identity, Config, UdpNetwork, HandelAgent, AgentProcessor,
 };
 
 
@@ -50,12 +51,6 @@ impl TestNet {
         )
     }
 
-    pub fn ip_address(&self, id: usize) -> IpAddr {
-        let c = (id / 100) as u8;
-        let d = (id % 100) as u8;
-        IpAddr::V4(Ipv4Addr::new(127, 0, 100 + c, d))
-    }
-
     pub fn identity_registry(&self) -> IdentityRegistry {
         let mut registry = IdentityRegistry::new();
 
@@ -89,6 +84,7 @@ impl TestNet {
 
         // start network layer
         let mut network = UdpNetwork::new();
+        let stats = Arc::clone(&network.statistics);
         let bind_to = SocketAddr::new(
             "0.0.0.0".parse().expect("Invalid IP address"),
             identity.address.port()
@@ -97,12 +93,34 @@ impl TestNet {
         // initialize agent
         let agent = Arc::new(HandelAgent::new(self.config(id), self.identity_registry(), network.sink()));
 
+
         Box::new(future::lazy(move|| {
+            let mut stopwatch = Stopwatch::start_new();
+
             tokio::spawn(network
                 .connect(&bind_to, Arc::clone(&agent))
                 .expect("Failed to initialize network")
-                .join(agent.spawn()).map(|_| ()))
-                .into_future()
+                .join(agent.spawn()).map(|_| ())
+                .and_then(move |_| {
+                    let agent = Arc::clone(&agent);
+                    agent.final_signature().unwrap()
+                        .map_err(|e| error!("Final signature error: {}", e))
+                        .and_then(move |result| {
+                            stopwatch.stop();
+
+                            match result {
+                                Ok(signature) => info!("[Node {}] Finished with signature: {:#?}", id, signature),
+                                Err(e) => error!("[Node {}] Finished with error: {:?}", id, e),
+                            }
+                            info!("[Node {}] Aggregation took {} ms", id, stopwatch.elapsed_ms());
+
+                            let stats = stats.read();
+                            info!("[Node {}] sent={}, received={}", id, stats.sent_count, stats.received_count);
+
+                            future::ok::<(), ()>(())
+                        })
+                })
+            ).into_future()
         }))
     }
 }

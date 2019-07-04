@@ -63,11 +63,12 @@ impl BinomialPartitioner {
         }
     }
 
-    pub fn combine(&self, signatures: Vec<&MultiSignature>, level: usize) -> Option<MultiSignature> {
+    pub fn combine(&self, signatures: Vec<&MultiSignature>, _level: usize) -> Option<MultiSignature> {
         let mut combined = (*signatures.first()?).clone();
 
         for signature in signatures.iter().skip(1) {
-            combined.add_multisig(signature);
+            combined.add_multisig(signature)
+                .unwrap_or_else(|e| panic!("Failed to combine signatures: {}", e));
         }
 
         Some(combined)
