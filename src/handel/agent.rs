@@ -255,29 +255,25 @@ impl HandelAgent {
 
     fn check_final_signature(&self, _todo: &Todo) {
         let last_level = self.levels.last().expect("No levels");
+        let state = self.state.upgradable_read();
 
-        if last_level.state.read().receive_completed {
-            if let Some(sender) = self.result_sender.write().take() {
-                info!("Last level finished receiving");
+        if let Some(combined) = state.store.combined(last_level.id) {
+            if combined.len() > self.config.threshold {
+                debug!("Last level combined: {:#?}", combined);
+                if let Some(sender) = self.result_sender.write().take() {
+                    info!("Last level finished receiving");
 
-                // set done to true
-                let mut state = self.state.write();
-                state.done = true;
-                let state = RwLockWriteGuard::downgrade(state);
+                    // set done to true
+                    let mut state = RwLockUpgradableReadGuard::upgrade(state);
+                    state.done = true;
+                    let state = RwLockWriteGuard::downgrade(state);
 
-                if let Some(combined) = state.store.combined(last_level.id) {
-                    debug!("Last level combined: {:#?}", combined);
                     sender.send(Ok(combined))
                         .unwrap_or_else(|_| error!("Sending final signature to future failed"));
                 }
                 else {
-                    warn!("store.combined() returned None");
-                    sender.send(Err(()))
-                        .unwrap_or_else(|_| error!("Failed to send error to future"));
+                    warn!("Already produced final signature");
                 }
-            }
-            else {
-                warn!("Already produced final signature");
             }
         }
     }
