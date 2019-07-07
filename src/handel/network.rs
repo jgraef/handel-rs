@@ -13,12 +13,15 @@ use parking_lot::RwLock;
 use beserial::{Serialize, Deserialize, WriteBytesExt, ReadBytesExt, BigEndian};
 
 use crate::handel::Message;
+use rand::{thread_rng, Rng};
 
 
 #[derive(Debug, Default)]
 pub struct Statistics {
     pub received_count: usize,
     pub sent_count: usize,
+    pub message_dropped_count: usize,
+    pub connection_dropped_count: usize,
 }
 
 impl Statistics {
@@ -28,6 +31,14 @@ impl Statistics {
 
     pub fn sent(&mut self) {
         self.sent_count += 1;
+    }
+
+    pub fn message_dropped(&mut self) {
+        self.message_dropped_count += 1;
+    }
+
+    pub fn connection_dropped(&mut self) {
+        self.connection_dropped_count += 1;
     }
 }
 
@@ -169,6 +180,18 @@ impl Decoder for Codec {
         let decoded = Deserialize::deserialize(&mut Cursor::new(raw_message.as_ref()));
         match decoded {
             Ok(message) => {
+                // drop random messages
+                /*if thread_rng().gen::<f64>() < 0.02 {
+                    warn!("Dropped message: {:?}", message);
+                    self.statistics.write().message_dropped();
+                    return Ok(None);
+                }
+                else if thread_rng().gen::<f64>() < 0.0001 {
+                    warn!("Killing node");
+                    self.statistics.write().connection_dropped();
+                    return Err(IoError::from(ErrorKind::BrokenPipe))
+                }*/
+
                 // statistics
                 self.statistics.write().received();
                 Ok(Some(message))

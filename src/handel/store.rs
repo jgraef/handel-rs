@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 pub trait SignatureStore {
     fn evaluate_individual(&self, individual: &Signature, level: usize, peer_id: usize) -> usize;
-    fn evaluate_multisig(&self, multisig: &MultiSignature, level: usize) -> usize;
+    fn evaluate_multisig(&self, multisig: &MultiSignature, level: usize, votes: usize) -> usize;
 
     fn put_individual(&mut self, individual: Signature, level: usize, peer_id: usize);
     fn put_multisig(&mut self, multisig: MultiSignature, level: usize);
@@ -116,11 +116,11 @@ impl SignatureStore for ReplaceStore {
             0
         }
         else {
-            self.evaluate_multisig(&MultiSignature::from_individual(individual, peer_id), level)
+            self.evaluate_multisig(&MultiSignature::from_individual(individual, peer_id), level, 1)
         }
     }
 
-    fn evaluate_multisig(&self, multisig: &MultiSignature, level: usize) -> usize {
+    fn evaluate_multisig(&self, multisig: &MultiSignature, level: usize, votes: usize) -> usize {
         // TODO: Signatures may have different weights and we could use that for scoring
 
         let to_receive = self.partitioner.size(level);
@@ -171,7 +171,6 @@ impl SignatureStore for ReplaceStore {
         //debug!("new_total={}, added_sigs={}, combined_sigs={}", new_total, added_sigs, combined_sigs);
 
         if added_sigs == 0 {
-            debug!("No new signatures added");
             // XXX return 1 for an individual signature
             if multisig.len() == 1 { 1 } else { 0 }
         }

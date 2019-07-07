@@ -28,13 +28,11 @@ pub struct BinomialPartitioner {
 
 impl BinomialPartitioner {
     pub fn new(node_id: usize, max_id: usize) -> Self {
-        let p = BinomialPartitioner {
+        BinomialPartitioner {
             node_id,
             max_id,
             num_levels: log2(max_id + 1) + 1
-        };
-        info!("Partitioner: {:?}", p);
-        p
+        }
     }
 
     pub fn size(&self, level: usize) -> usize {

@@ -15,21 +15,21 @@ use bls::bls12_381::Signature;
 
 use crate::handel::{
     IdentityRegistry, Message, Config, BinomialPartitioner, Level, MultiSignature, Handler,
-    SignatureStore, ReplaceStore, Verifier, VerifyResult,
-    LinearTimeout, TimeoutStrategy
+    SignatureStore, ReplaceStore, VerifyResult,
+    LinearTimeout, TimeoutStrategy, DummyVerifier, Verifier
 };
 
 
 #[derive(Clone, Debug)]
 enum Todo {
     Individual { signature: Signature, level: usize, origin: usize },
-    Multi { signature: MultiSignature, level: usize }
+    Multi { signature: MultiSignature, level: usize, votes: usize }
 }
 
 impl Todo {
     pub fn evaluate(&self, store: &ReplaceStore) -> usize {
         match self {
-            Todo::Multi { signature, level } => store.evaluate_multisig(signature, *level),
+            Todo::Multi { signature, level, votes } => store.evaluate_multisig(signature, *level, *votes),
             Todo::Individual { signature, level, origin } => store.evaluate_individual(signature, *level, *origin)
         }
     }
@@ -39,7 +39,7 @@ impl Todo {
             Todo::Individual { signature, level, origin } => {
                 store.put_individual(signature, level, origin)
             }
-            Todo::Multi { signature, level } => {
+            Todo::Multi { signature, level, votes: _ } => {
                 store.put_multisig(signature, level)
             }
         }
@@ -48,7 +48,7 @@ impl Todo {
     pub fn level(&self) -> usize {
         *match self {
             Todo::Individual { signature: _, level, origin: _ } => level,
-            Todo::Multi { signature: _, level } => level,
+            Todo::Multi { signature: _, level, votes: _ } => level,
         }
     }
 }
@@ -74,7 +74,7 @@ pub struct HandelAgent {
     identities: Arc<IdentityRegistry>,
 
     /// Multi-threaded signature verification
-    verifier: Verifier,
+    verifier: DummyVerifier,
 
     /// Sink to send messages to other peers
     sink: UnboundedSender<(Message, SocketAddr)>,
@@ -96,10 +96,10 @@ pub struct HandelAgent {
 
 impl HandelAgent {
     pub fn new(config: Config, identities: IdentityRegistry, sink: UnboundedSender<(Message, SocketAddr)>) -> HandelAgent {
-        info!("New Handel Agent:");
+        /*info!("New Handel Agent:");
         info!(" - ID: {}", config.node_identity.id);
         info!(" - Address: {}", config.node_identity.address);
-        info!(" - Public Key: {}", hex::encode(config.node_identity.public_key.serialize_to_vec()));
+        info!(" - Public Key: {}", hex::encode(config.node_identity.public_key.serialize_to_vec()));*/
 
         /*info!("Identities (n={}):", identities.len());
         let mut max_id = 0;
@@ -118,7 +118,8 @@ impl HandelAgent {
         let partitioner = Arc::new(BinomialPartitioner::new(config.node_identity.id, max_id));
         let levels = Level::create_levels(&config, Arc::clone(&partitioner));
         let store = ReplaceStore::new(Arc::clone(&partitioner));
-        let verifier = Verifier::new(config.threshold, config.message_hash.clone(), Arc::clone(&identities), None);
+        //let verifier = StopWatchVerifier::new(ThreadPoolVerifier::new(config.threshold, config.message_hash.clone(), Arc::clone(&identities), None));
+        let verifier = DummyVerifier::new(config.threshold, Arc::clone(&identities));
         let individual = config.individual_signature();
         let timeouts = LinearTimeout::new(config.timeout);
         let (result_sender, result_receiver) = channel();
@@ -228,7 +229,7 @@ impl HandelAgent {
 
                 debug!("check_completed_level: level={}, best.len={}, num_peers={}", level.id, best.len(), level.num_peers());
                 if best.len() == level.num_peers() {
-                    info!("Level {} complete", todo.level());
+                    //info!("Level {} complete", todo.level());
                     level_state.receive_completed = true;
 
                     if todo.level() + 1 < self.levels.len() {
@@ -425,12 +426,14 @@ impl Handler for Arc<HandelAgent> {
             let this = Arc::clone(&self);
             let multisig_fut = self.verifier.verify_multisig(multisig.clone(), false)
                 .and_then(move|result| {
-                    if result == VerifyResult::Ok {
-                        this.state.write().todos.push(Todo::Multi { signature: multisig, level });
-                    }
-                    else {
-                        warn!("Rejected signature: {:?}", result);
-                        warn!("{:#?}", multisig);
+                    match result {
+                        VerifyResult::Ok { votes } => {
+                            this.state.write().todos.push(Todo::Multi { signature: multisig, level, votes });
+                        },
+                        _ => {
+                            warn!("Rejected signature: {:?}", result);
+                            warn!("{:#?}", multisig);
+                        }
                     }
                     Ok(())
                 });
@@ -441,11 +444,15 @@ impl Handler for Arc<HandelAgent> {
             let individual_fut = if let Some(sig) = individual {
                 Either::A(self.verifier.verify_individual(sig.clone(), origin)
                     .and_then(move |result| {
-                        if result == VerifyResult::Ok {
-                            this.state.write().todos.push(Todo::Individual{ signature: sig, level, origin });
-                        }
-                        else {
-                            warn!("Rejected signature: {:?}", result);
+                        match result {
+                            VerifyResult::Ok { votes } => {
+                                assert_eq!(votes, 1);
+                                this.state.write().todos.push(Todo::Individual{ signature: sig, level, origin });
+                            },
+                            _ => {
+                                warn!("Rejected signature: {:?}", result);
+                                warn!("{:#?}", sig);
+                            }
                         }
                         Ok(())
                     }))
@@ -461,7 +468,7 @@ impl Handler for Arc<HandelAgent> {
                 .and_then(move |_| {
                     // continuously put best todo into store, until there is no good one anymore
                     while let Some((todo, score)) = this.get_best_todo() {
-                        info!("Processing: score={}: {:?}", score, todo);
+                        //info!("Processing: score={}: {:?}", score, todo);
                         // TODO: put signature from todo into store - is this correct?
                         todo.clone().put(&mut this.state.write().store);
                         this.check_completed_level(&todo);

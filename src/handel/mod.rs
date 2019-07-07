@@ -22,5 +22,5 @@ pub use config::Config;
 pub use partitioner::BinomialPartitioner;
 pub use network::{UdpNetwork, Handler};
 pub use store::{SignatureStore, ReplaceStore};
-pub use verifier::{Verifier, VerifyResult, VerifyFuture};
+pub use verifier::{ThreadPoolVerifier, VerifyResult, DummyVerifier, Verifier};
 pub use timeout::{TimeoutStrategy, LinearTimeout};

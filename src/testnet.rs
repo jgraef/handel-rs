@@ -72,8 +72,8 @@ impl TestNet {
             node_identity: Arc::new(self.identity(id)),
             disable_shuffling: true,
             update_count: 1,
-            update_period: Duration::from_millis(1000),
-            timeout: Duration::from_millis(5000),
+            update_period: Duration::from_millis(100),
+            timeout: Duration::from_millis(500),
             peer_count: 10,
             key_pair: self.key_pair(id),
         }
@@ -109,13 +109,13 @@ impl TestNet {
                             stopwatch.stop();
 
                             match result {
-                                Ok(signature) => info!("[Node {}] Finished with signature: {:#?}", id, signature),
+                                Ok(signature) => {
+                                    info!("[Node {}] Finished with signature: {:#?}", id, signature);
+                                    let stats = stats.read();
+                                    info!("[Node {}] Stats: {:?}, time={}, signatures={}", id, stats, stopwatch.elapsed_ms(), signature.len());
+                                },
                                 Err(e) => error!("[Node {}] Finished with error: {:?}", id, e),
                             }
-                            info!("[Node {}] Aggregation took {} ms", id, stopwatch.elapsed_ms());
-
-                            let stats = stats.read();
-                            info!("[Node {}] sent={}, received={}", id, stats.sent_count, stats.received_count);
 
                             future::ok::<(), ()>(())
                         })
