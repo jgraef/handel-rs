@@ -15,8 +15,8 @@ use bls::bls12_381::Signature;
 
 use crate::handel::{
     IdentityRegistry, Message, Config, BinomialPartitioner, Level, MultiSignature, Handler,
-    SignatureStore, ReplaceStore, VerifyResult,
-    LinearTimeout, TimeoutStrategy, DummyVerifier, Verifier
+    SignatureStore, ReplaceStore, VerifyResult, LinearTimeout, TimeoutStrategy, DummyVerifier,
+    Verifier, ThreadPoolVerifier
 };
 
 
@@ -75,6 +75,7 @@ pub struct HandelAgent {
 
     /// Multi-threaded signature verification
     verifier: DummyVerifier,
+    //verifier: ThreadPoolVerifier,
 
     /// Sink to send messages to other peers
     sink: UnboundedSender<(Message, SocketAddr)>,
@@ -118,7 +119,7 @@ impl HandelAgent {
         let partitioner = Arc::new(BinomialPartitioner::new(config.node_identity.id, max_id));
         let levels = Level::create_levels(&config, Arc::clone(&partitioner));
         let store = ReplaceStore::new(Arc::clone(&partitioner));
-        //let verifier = StopWatchVerifier::new(ThreadPoolVerifier::new(config.threshold, config.message_hash.clone(), Arc::clone(&identities), None));
+        //let verifier = ThreadPoolVerifier::new(config.threshold, config.message_hash.clone(), Arc::clone(&identities), None);
         let verifier = DummyVerifier::new(config.threshold, Arc::clone(&identities));
         let individual = config.individual_signature();
         let timeouts = LinearTimeout::new(config.timeout);
@@ -161,11 +162,7 @@ impl HandelAgent {
                 continue;
             }
             if let Some(identity) = self.identities.get_by_id(id) {
-                self.sink.unbounded_send((message.clone(), identity.address.clone()))
-                    .map_err(|e| {
-                        error!("Send failed: {}", e);
-                        e
-                    })?;
+                self.sink.unbounded_send((message.clone(), identity.address.clone()))?;
             }
             else {
                 error!("Unknown identity: id={}", id);

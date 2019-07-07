@@ -11,6 +11,8 @@ use crate::handel::MultiSignature;
 pub enum PartitioningError {
     #[fail(display = "Invalid level: {}", _0)]
     InvalidLevel(usize),
+    #[fail(display = "Empty level: {}", _0)]
+    EmptyLevel(usize),
 }
 
 
@@ -53,11 +55,16 @@ impl BinomialPartitioner {
             let f = 1 << (level - 1);
 
             let min = (self.node_id ^ f) & !m;
-            let max = (self.node_id ^ f) | m;
+            let max = ((self.node_id ^ f) | m).min(self.max_id);
 
-            //debug!("node_id={:b}, level={}, m={:b}, f={:b}, min={:b}, max={:b}", self.node_id, level, m, f, min, max);
+            info!("node_id={:b}, level={}, m={:b}, f={:b}, min={:b}, max={:b}", self.node_id, level, m, f, min, max);
 
-            Ok(min ..= max)
+            if min > max {
+                Err(PartitioningError::EmptyLevel(level))
+            }
+            else {
+                Ok(min ..= max)
+            }
         }
     }
 

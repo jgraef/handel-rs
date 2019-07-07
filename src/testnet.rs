@@ -70,7 +70,7 @@ impl TestNet {
             threshold: self.threshold(),
             message_hash: b"foobar".hash::<Blake2bHash>(),
             node_identity: Arc::new(self.identity(id)),
-            disable_shuffling: true,
+            disable_shuffling: false,
             update_count: 1,
             update_period: Duration::from_millis(100),
             timeout: Duration::from_millis(500),
@@ -112,7 +112,7 @@ impl TestNet {
                                 Ok(signature) => {
                                     info!("[Node {}] Finished with signature: {:#?}", id, signature);
                                     let stats = stats.read();
-                                    info!("[Node {}] Stats: {:?}, time={}, signatures={}", id, stats, stopwatch.elapsed_ms(), signature.len());
+                                    info!("[Node {}] Stats: time={}, signatures={}, sent={}, received={}", id, stopwatch.elapsed_ms(), signature.len(), stats.sent_count, stats.received_count);
                                 },
                                 Err(e) => error!("[Node {}] Finished with error: {:?}", id, e),
                             }

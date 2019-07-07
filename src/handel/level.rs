@@ -4,7 +4,7 @@ use std::sync::Arc;
 use rand::thread_rng;
 use parking_lot::RwLock;
 
-use crate::handel::{MultiSignature, BinomialPartitioner, Config};
+use crate::handel::{MultiSignature, BinomialPartitioner, PartitioningError, Config};
 use rand::seq::SliceRandom;
 
 
@@ -55,24 +55,32 @@ impl Level {
             debug!("Creating level {}", i);
 
             // This unwrap is safe, since we only iterate until `num_levels - 1`
-            let mut ids: Vec<usize> = partitioner.range(i).unwrap().collect();
+            match partitioner.range(i) {
+                Ok(ids) => {
+                    let mut ids = ids.collect::<Vec<usize>>();
 
-            debug!("Number of identities: {}", ids.len());
+                    debug!("Number of identities: {}", ids.len());
+                    if !config.disable_shuffling {
+                        ids.shuffle(&mut rng);
+                    }
 
-            if !config.disable_shuffling {
-                ids.shuffle(&mut rng);
+                    let size = ids.len();
+                    let level = Level::new(i, ids, send_expected_full_size);
+
+                    if !first_active {
+                        first_active = true;
+                        level.state.write().send_started = true;
+                    }
+
+                    levels.push(level);
+                    send_expected_full_size += size;
+                },
+                Err(PartitioningError::EmptyLevel(_)) => {
+                    let level = Level::new(i, vec![], send_expected_full_size);
+                    levels.push(level);
+                },
+                Err(e) => panic!("{}", e),
             }
-
-            let size = ids.len();
-            let level = Level::new(i, ids, send_expected_full_size);
-
-            if !first_active {
-                first_active = true;
-                level.state.write().send_started = true;
-            }
-
-            levels.push(level);
-            send_expected_full_size += size;
         }
 
         levels
