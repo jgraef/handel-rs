@@ -31,7 +31,7 @@ impl BinomialPartitioner {
         BinomialPartitioner {
             node_id,
             max_id,
-            num_levels: log2(max_id + 1) + 1
+            num_levels: log2(max_id) + 2
         }
     }
 
@@ -105,5 +105,13 @@ mod tests {
         assert_eq!(partitioner.range(2), Ok(0..=1), "Level 2");
         assert_eq!(partitioner.range(3), Ok(4..=7), "Level 3");
         assert_eq!(partitioner.range(4), Err(PartitioningError::InvalidLevel(4)));
+    }
+
+    #[test]
+    fn test_non_power_of_two() {
+        assert_eq!(BinomialPartitioner::new(0, 6).num_levels, 4);
+        assert_eq!(BinomialPartitioner::new(0, 5).num_levels, 4);
+        assert_eq!(BinomialPartitioner::new(0, 4).num_levels, 4);
+        assert_eq!(BinomialPartitioner::new(0, 3).num_levels, 3);
     }
 }
